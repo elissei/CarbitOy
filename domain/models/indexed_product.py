@@ -1,0 +1,26 @@
+﻿from enum import Enum
+
+from pydantic import BaseModel
+
+
+class Unit(str, Enum):
+    PCS = "PCS"
+    SET = "SET"
+    PAIR = "PAIR"
+    PACKAGE = "PACKAGE"
+    L = "L"
+    KG = "KG"
+
+
+class IndexedProduct(BaseModel):
+    product_id: str
+    supplier: str
+    supplier_product_id: str
+
+    canonical_product_type: str
+
+    package_quantity: int
+    package_unit: Unit
+
+    accounting_quantity: int
+    accounting_unit: Unit
