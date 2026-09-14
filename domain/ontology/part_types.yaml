@@ -1,0 +1,60 @@
+﻿part_types:
+  brake_pad:
+    category: BRAKE
+    description: Brake pad
+
+  brake_disc:
+    category: BRAKE
+    description: Brake disc
+
+  brake_caliper:
+    category: BRAKE
+    description: Brake caliper
+
+  brake_fluid:
+    category: BRAKE
+    description: Brake fluid
+
+  engine_oil:
+    category: SERVICE
+    description: Engine oil
+
+  oil_filter:
+    category: SERVICE
+    description: Oil filter
+
+  air_filter:
+    category: SERVICE
+    description: Air filter
+
+  cabin_filter:
+    category: SERVICE
+    description: Cabin air filter
+
+  spark_plug:
+    category: SERVICE
+    description: Spark plug
+
+  shock_absorber:
+    category: SUSPENSION
+    description: Shock absorber
+
+  spring:
+    category: SUSPENSION
+    description: Suspension spring
+
+  control_arm:
+    category: SUSPENSION
+    description: Control arm
+
+  ball_joint:
+    category: SUSPENSION
+    description: Ball joint
+
+  stabilizer_link:
+    category: SUSPENSION
+    description: Stabilizer link
+
+  battery:
+    category: BATTERY
+    description: Vehicle battery

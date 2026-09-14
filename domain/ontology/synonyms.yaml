@@ -1,0 +1,100 @@
+﻿synonyms:
+  brake_pad:
+    - jarrupala
+    - jarrupalat
+    - pala
+    - palat
+    - brake pad
+    - brake pads
+
+  brake_disc:
+    - jarrulevy
+    - jarrulevyt
+    - levy
+    - levyt
+    - brake disc
+    - brake discs
+
+  brake_caliper:
+    - jarrusatula
+    - jarrusatulat
+    - brake caliper
+    - brake calipers
+
+  brake_fluid:
+    - jarruneste
+    - jarrunesteet
+    - brake fluid
+
+  engine_oil:
+    - moottoriöljy
+    - moottoriöljyt
+    - öljy
+    - engine oil
+
+  oil_filter:
+    - öljynsuodatin
+    - öljynsuodattimet
+    - oil filter
+
+  air_filter:
+    - ilmansuodatin
+    - ilmansuodattimet
+    - air filter
+
+  cabin_filter:
+    - raitisilmasuodatin
+    - raitisilmasuodattimet
+    - cabin filter
+    - pollen filter
+
+  spark_plug:
+    - sytytystulppa
+    - sytytystulpat
+    - tulppa
+    - tulpat
+    - spark plug
+    - spark plugs
+
+  shock_absorber:
+    - iskunvaimennin
+    - iskunvaimentimet
+    - iskari
+    - iskarit
+    - shock absorber
+    - shock absorbers
+
+  spring:
+    - jousi
+    - jouset
+    - suspension spring
+    - suspension springs
+
+  control_arm:
+    - alatukivarsi
+    - alatukivarret
+    - tukivarsi
+    - tukivarret
+    - control arm
+    - control arms
+
+  ball_joint:
+    - alapallonivel
+    - alapallonivelet
+    - pallonivel
+    - pallonivelet
+    - ball joint
+    - ball joints
+
+  stabilizer_link:
+    - koiranluu
+    - koiranluut
+    - kallistuksenvakaajan yhdystanko
+    - stabilizer link
+    - stabilizer links
+
+  battery:
+    - akku
+    - akut
+    - battery
+    - batteries
