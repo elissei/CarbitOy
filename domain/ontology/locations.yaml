@@ -1,0 +1,25 @@
+﻿axle:
+  FRONT:
+    - etu
+    - edessä
+    - etupää
+    - etuakseli
+    - etujarrut
+    - etupyörät
+
+  REAR:
+    - taka
+    - takana
+    - takapää
+    - taka-akseli
+    - takajarrut
+    - takapyörät
+
+  BOTH:
+    - molemmat
+    - molemmissa
+    - etu ja taka
+    - edessä ja takana
+
+  UNKNOWN:
+    - akseli ei tiedossa
