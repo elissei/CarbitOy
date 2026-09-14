@@ -10,9 +10,17 @@ class Axle(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class RequirementUnit(str, Enum):
+    PCS = "PCS"
+    SET = "SET"
+    PAIR = "PAIR"
+    L = "L"
+    KG = "KG"
+
+
 class PartRequirement(BaseModel):
     canonical_product_type: str
     axle: Axle
 
     required_quantity: int
-    required_unit: str
+    required_unit: RequirementUnit
