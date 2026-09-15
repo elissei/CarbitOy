@@ -22,5 +22,5 @@ class IndexedProduct(BaseModel):
     package_quantity: int
     package_unit: Unit
 
-    accounting_quantity: int
-    accounting_unit: Unit
+    commercial_quantity: int
+    commercial_unit: Unit

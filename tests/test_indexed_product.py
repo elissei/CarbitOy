@@ -2,7 +2,7 @@
 from domain.models.part_requirement import Axle, PartRequirement, RequirementUnit
 
 
-def test_brake_pad_set_package_and_accounting_quantity():
+def test_brake_pad_set_package_and_commercial_quantity():
     product = IndexedProduct(
         product_id="MOTONET-123456",
         supplier="MOTONET",
@@ -10,15 +10,15 @@ def test_brake_pad_set_package_and_accounting_quantity():
         canonical_product_type="brake_pad",
         package_quantity=2,
         package_unit=Unit.PCS,
-        accounting_quantity=1,
-        accounting_unit=Unit.SET,
+        commercial_quantity=1,
+        commercial_unit=Unit.SET,
     )
 
     assert product.package_quantity == 2
     assert product.package_unit == Unit.PCS
 
-    assert product.accounting_quantity == 1
-    assert product.accounting_unit == Unit.SET
+    assert product.commercial_quantity == 1
+    assert product.commercial_unit == Unit.SET
 
 
 def test_brake_pad_requirement_is_separate_from_supplier_package():
@@ -36,8 +36,8 @@ def test_brake_pad_requirement_is_separate_from_supplier_package():
         canonical_product_type="brake_pad",
         package_quantity=2,
         package_unit=Unit.PCS,
-        accounting_quantity=1,
-        accounting_unit=Unit.SET,
+        commercial_quantity=1,
+        commercial_unit=Unit.SET,
     )
 
     assert requirement.required_quantity == 1
