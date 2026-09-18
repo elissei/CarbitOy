@@ -1,5 +1,5 @@
-﻿from domain.models.indexed_product import IndexedProduct, Unit
-from domain.models.part_requirement import Axle, PartRequirement, RequirementUnit
+﻿from domain.models.indexed_product import Axle, IndexedProduct, Unit
+from domain.models.part_requirement import PartRequirement, RequirementUnit
 
 
 def test_brake_pad_set_package_and_commercial_quantity():
@@ -8,6 +8,7 @@ def test_brake_pad_set_package_and_commercial_quantity():
         supplier="MOTONET",
         supplier_product_id="123456",
         canonical_product_type="brake_pad",
+        axle=Axle.FRONT,
         package_quantity=2,
         package_unit=Unit.PCS,
         commercial_quantity=1,
@@ -34,6 +35,7 @@ def test_brake_pad_requirement_is_separate_from_supplier_package():
         supplier="MOTONET",
         supplier_product_id="123456",
         canonical_product_type="brake_pad",
+        axle=Axle.FRONT,
         package_quantity=2,
         package_unit=Unit.PCS,
         commercial_quantity=1,
