@@ -1,5 +1,10 @@
 ﻿from domain.models.part_requirement import Axle
-from domain.ontology.parser import find_axle, find_part_type, parse_part_requirement
+from domain.ontology.parser import (
+    find_axle,
+    find_part_type,
+    parse_part_requirement,
+    part_type_requires_axle,
+)
 
 
 def test_part_type_synonyms():
@@ -41,3 +46,11 @@ def test_unknown_part_is_not_guessed():
     result = parse_part_requirement("jarrukengät")
 
     assert result is None
+
+
+def test_brake_pad_requires_axle():
+    assert part_type_requires_axle("brake_pad") is True
+
+
+def test_spark_plug_does_not_require_axle():
+    assert part_type_requires_axle("spark_plug") is False

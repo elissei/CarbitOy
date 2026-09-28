@@ -1,4 +1,10 @@
-from domain.rules.package_coverage import calculate_package_coverage
+from domain.models.enums import Axle
+from domain.models.indexed_product import IndexedProduct, Unit
+from domain.models.part_requirement import PartRequirement, RequirementUnit
+from domain.rules.package_coverage import (
+    calculate_package_coverage,
+    calculate_product_coverage,
+)
 
 
 def test_exact_package_coverage():
@@ -33,10 +39,6 @@ def test_package_overage_is_calculated():
     assert result.commercial_quantity_needed == 3
     assert result.covered_quantity == 6
 
-from domain.models.indexed_product import IndexedProduct, Unit
-from domain.models.part_requirement import Axle, PartRequirement, RequirementUnit
-from domain.rules.package_coverage import calculate_product_coverage
-
 
 def test_product_coverage_uses_requirement_and_product():
     requirement = PartRequirement(
@@ -67,9 +69,6 @@ def test_product_coverage_uses_requirement_and_product():
     assert result.commercial_quantity_needed == 3
     assert result.covered_quantity == 6
 
-from domain.models.indexed_product import IndexedProduct, Unit
-from domain.models.part_requirement import Axle, PartRequirement, RequirementUnit
-from domain.rules.package_coverage import calculate_product_coverage
 
 def test_different_product_type_is_not_accepted_for_coverage():
     requirement = PartRequirement(
@@ -98,6 +97,7 @@ def test_different_product_type_is_not_accepted_for_coverage():
 
     assert result.covered is False
 
+
 def test_incompatible_units_are_not_accepted_for_coverage():
     requirement = PartRequirement(
         canonical_product_type="spark_plug",
@@ -125,6 +125,7 @@ def test_incompatible_units_are_not_accepted_for_coverage():
 
     assert result.covered is False
 
+
 def test_different_axle_is_not_accepted_for_coverage():
     requirement = PartRequirement(
         canonical_product_type="brake_pad",
@@ -139,6 +140,60 @@ def test_different_axle_is_not_accepted_for_coverage():
         supplier_product_id="REAR-BRAKE",
         canonical_product_type="brake_pad",
         axle=Axle.REAR,
+        package_quantity=2,
+        package_unit=Unit.SET,
+        commercial_quantity=1,
+        commercial_unit=Unit.SET,
+    )
+
+    result = calculate_product_coverage(
+        requirement=requirement,
+        product=product,
+    )
+
+    assert result.covered is False
+
+def test_axle_is_not_required_for_spark_plug():
+    requirement = PartRequirement(
+        canonical_product_type="spark_plug",
+        axle=Axle.UNKNOWN,
+        required_quantity=4,
+        required_unit=RequirementUnit.PCS,
+    )
+
+    product = IndexedProduct(
+        product_id="SUPPLIER-SPARK-PLUG",
+        supplier="SUPPLIER",
+        supplier_product_id="SPARK-PLUG",
+        canonical_product_type="spark_plug",
+        axle=Axle.UNKNOWN,
+        package_quantity=4,
+        package_unit=Unit.PCS,
+        commercial_quantity=1,
+        commercial_unit=Unit.PACKAGE,
+    )
+
+    result = calculate_product_coverage(
+        requirement=requirement,
+        product=product,
+    )
+
+    assert result.covered is True
+
+def test_required_axle_cannot_be_unknown():
+    requirement = PartRequirement(
+        canonical_product_type="brake_pad",
+        axle=Axle.UNKNOWN,
+        required_quantity=1,
+        required_unit=RequirementUnit.SET,
+    )
+
+    product = IndexedProduct(
+        product_id="SUPPLIER-BRAKE-PAD",
+        supplier="SUPPLIER",
+        supplier_product_id="BRAKE-PAD",
+        canonical_product_type="brake_pad",
+        axle=Axle.FRONT,
         package_quantity=2,
         package_unit=Unit.SET,
         commercial_quantity=1,
