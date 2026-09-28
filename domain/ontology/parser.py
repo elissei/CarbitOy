@@ -72,3 +72,14 @@ def parse_part_requirement(text: str) -> PartRequirement | None:
         required_quantity=1,
         required_unit="SET",
     )
+
+def part_type_requires_axle(canonical_product_type: str) -> bool:
+    data = load_yaml("part_types.yaml")
+    part_type = data["part_types"].get(canonical_product_type)
+
+    if part_type is None:
+        raise ValueError(
+            f"Unknown canonical product type: {canonical_product_type}"
+        )
+
+    return part_type["requires_axle"]

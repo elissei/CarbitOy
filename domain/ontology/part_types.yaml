@@ -1,60 +1,75 @@
-﻿part_types:
+part_types:
   brake_pad:
     category: BRAKE
     description: Brake pad
+    requires_axle: true
 
   brake_disc:
     category: BRAKE
     description: Brake disc
+    requires_axle: true
 
   brake_caliper:
     category: BRAKE
     description: Brake caliper
+    requires_axle: true
 
   brake_fluid:
     category: BRAKE
     description: Brake fluid
+    requires_axle: false
 
   engine_oil:
     category: SERVICE
     description: Engine oil
+    requires_axle: false
 
   oil_filter:
     category: SERVICE
     description: Oil filter
+    requires_axle: false
 
   air_filter:
     category: SERVICE
     description: Air filter
+    requires_axle: false
 
   cabin_filter:
     category: SERVICE
     description: Cabin air filter
+    requires_axle: false
 
   spark_plug:
     category: SERVICE
     description: Spark plug
+    requires_axle: false
 
   shock_absorber:
     category: SUSPENSION
     description: Shock absorber
+    requires_axle: true
 
   spring:
     category: SUSPENSION
     description: Suspension spring
+    requires_axle: true
 
   control_arm:
     category: SUSPENSION
     description: Control arm
+    requires_axle: true
 
   ball_joint:
     category: SUSPENSION
     description: Ball joint
+    requires_axle: true
 
   stabilizer_link:
     category: SUSPENSION
     description: Stabilizer link
+    requires_axle: true
 
   battery:
     category: BATTERY
     description: Vehicle battery
+    requires_axle: false

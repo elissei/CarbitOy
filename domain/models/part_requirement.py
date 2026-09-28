@@ -1,13 +1,8 @@
-﻿from enum import Enum
+from enum import Enum
 
 from pydantic import BaseModel
 
-
-class Axle(str, Enum):
-    FRONT = "FRONT"
-    REAR = "REAR"
-    BOTH = "BOTH"
-    UNKNOWN = "UNKNOWN"
+from domain.models.enums import Axle
 
 
 class RequirementUnit(str, Enum):

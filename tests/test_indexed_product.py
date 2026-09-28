@@ -1,4 +1,5 @@
-﻿from domain.models.indexed_product import Axle, IndexedProduct, Unit
+from domain.models.enums import Axle
+from domain.models.indexed_product import IndexedProduct, Unit
 from domain.models.part_requirement import PartRequirement, RequirementUnit
 
 

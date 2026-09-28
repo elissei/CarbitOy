@@ -1,7 +1,10 @@
 from pydantic import BaseModel
-from domain.rules.axle_matching import is_axle_compatible
+
+from domain.models.enums import Axle
 from domain.models.indexed_product import IndexedProduct
 from domain.models.part_requirement import PartRequirement
+from domain.ontology.parser import part_type_requires_axle
+from domain.rules.axle_matching import is_axle_compatible
 from domain.rules.product_matching import is_product_type_match
 from domain.rules.unit_matching import is_unit_compatible
 
@@ -56,15 +59,23 @@ def calculate_product_coverage(
             covered_quantity=0,
         )
 
-    if not is_axle_compatible(
-        requirement.axle,
-        product.axle,
-    ):
-        return PackageCoverageResult(
-        covered=False,
-        commercial_quantity_needed=0,
-        covered_quantity=0,
-        )
+    if part_type_requires_axle(requirement.canonical_product_type):
+        if requirement.axle == Axle.UNKNOWN:
+            return PackageCoverageResult(
+                covered=False,
+                commercial_quantity_needed=0,
+                covered_quantity=0,
+            )
+
+        if not is_axle_compatible(
+            requirement.axle,
+            product.axle,
+        ):
+            return PackageCoverageResult(
+                covered=False,
+                commercial_quantity_needed=0,
+                covered_quantity=0,
+            )
 
     return calculate_package_coverage(
         required_quantity=requirement.required_quantity,

@@ -1,8 +1,9 @@
-﻿from enum import Enum
+from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from domain.models.part_requirement import Axle
+from domain.models.enums import Axle
+from domain.models.part_requirement import PartRequirement
 
 
 class Operation(str, Enum):
@@ -12,3 +13,4 @@ class Operation(str, Enum):
 class WorkItem(BaseModel):
     operation: Operation
     axle: Axle
+    part_requirements: list[PartRequirement] = Field(default_factory=list)
