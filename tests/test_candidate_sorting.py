@@ -1,0 +1,46 @@
+from decimal import Decimal
+
+from domain.models.supplier_candidate import SupplierCandidate
+from domain.rules.candidate_sorting import sort_by_total_price
+
+
+def test_candidates_are_sorted_by_total_price():
+    expensive = SupplierCandidate(
+        product_id="EXPENSIVE",
+        supplier="Supplier A",
+        supplier_product_id="A",
+        commercial_quantity_needed=1,
+        unit_price=Decimal("60.00"),
+        total_price=Decimal("60.00"),
+        currency="EUR",
+    )
+
+    cheap = SupplierCandidate(
+        product_id="CHEAP",
+        supplier="Supplier B",
+        supplier_product_id="B",
+        commercial_quantity_needed=1,
+        unit_price=Decimal("40.00"),
+        total_price=Decimal("40.00"),
+        currency="EUR",
+    )
+
+    medium = SupplierCandidate(
+        product_id="MEDIUM",
+        supplier="Supplier C",
+        supplier_product_id="C",
+        commercial_quantity_needed=1,
+        unit_price=Decimal("50.00"),
+        total_price=Decimal("50.00"),
+        currency="EUR",
+    )
+
+    result = sort_by_total_price(
+        [expensive, cheap, medium]
+    )
+
+    assert [candidate.supplier for candidate in result] == [
+        "Supplier B",
+        "Supplier C",
+        "Supplier A",
+    ]
