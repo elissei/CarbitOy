@@ -1,7 +1,9 @@
-﻿from datetime import datetime
+from datetime import datetime
 from decimal import Decimal
 
 from pydantic import BaseModel
+
+from domain.models.supplier_offer import Availability
 
 
 class HumanSelection(BaseModel):
@@ -13,6 +15,6 @@ class HumanSelection(BaseModel):
     unit_price: Decimal
     total_price: Decimal
     currency: str
+    availability: Availability
     selected_by: str
     selected_at: datetime
-

@@ -1,9 +1,10 @@
-﻿from datetime import datetime
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
 
 from domain.models.supplier_candidate import SupplierCandidate
+from domain.models.supplier_offer import Availability
 from domain.rules.human_selection import create_human_selection
 
 
@@ -16,6 +17,7 @@ def test_create_human_selection_from_candidate():
         unit_price=Decimal("44.90"),
         total_price=Decimal("44.90"),
         currency="EUR",
+        availability=Availability.IN_STOCK,
     )
 
     selected_at = datetime(2026, 10, 2, 12, 30)
@@ -37,6 +39,7 @@ def test_create_human_selection_from_candidate():
     assert selection.unit_price == Decimal("44.90")
     assert selection.total_price == Decimal("44.90")
     assert selection.currency == "EUR"
+    assert selection.availability == Availability.IN_STOCK
     assert selection.selected_by == "workshop_manager"
     assert selection.selected_at == selected_at
 
@@ -50,6 +53,7 @@ def test_human_selection_requires_selected_by():
         unit_price=Decimal("44.90"),
         total_price=Decimal("44.90"),
         currency="EUR",
+        availability=Availability.IN_STOCK,
     )
 
     with pytest.raises(
@@ -76,6 +80,7 @@ def test_select_candidate_from_raw_proposal():
         unit_price=Decimal("44.90"),
         total_price=Decimal("44.90"),
         currency="EUR",
+        availability=Availability.IN_STOCK,
     )
 
     proposal = RawProposal(
@@ -100,6 +105,7 @@ def test_select_candidate_from_raw_proposal():
     assert selection.unit_price == Decimal("44.90")
     assert selection.total_price == Decimal("44.90")
     assert selection.currency == "EUR"
+    assert selection.availability == Availability.IN_STOCK
     assert selection.selected_by == "workshop_manager"
     assert selection.selected_at == selected_at
 
@@ -113,6 +119,7 @@ def test_cannot_select_candidate_outside_raw_proposal():
         unit_price=Decimal("44.90"),
         total_price=Decimal("44.90"),
         currency="EUR",
+        availability=Availability.IN_STOCK,
     )
 
     outside_candidate = SupplierCandidate(
@@ -123,6 +130,7 @@ def test_cannot_select_candidate_outside_raw_proposal():
         unit_price=Decimal("39.90"),
         total_price=Decimal("39.90"),
         currency="EUR",
+        availability=Availability.IN_STOCK,
     )
 
     proposal = RawProposal(
@@ -141,7 +149,3 @@ def test_cannot_select_candidate_outside_raw_proposal():
             selected_by="workshop_manager",
             selected_at=datetime(2026, 10, 2, 12, 54),
         )
-
-
-
-
