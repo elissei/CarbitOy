@@ -5,6 +5,9 @@ import pytest
 
 from domain.models.supplier_candidate import SupplierCandidate
 from domain.models.supplier_offer import Availability
+from domain.models.enums import Axle
+from domain.models.vehicle import Vehicle
+from domain.models.work_item import Operation, WorkItem
 from domain.rules.human_selection import create_human_selection
 
 
@@ -85,6 +88,16 @@ def test_select_candidate_from_raw_proposal():
 
     proposal = RawProposal(
         proposal_id="PROPOSAL-001",
+        vehicle=Vehicle(
+            registration="ABC-123",
+            make="Toyota",
+            model="Corolla",
+            year=2020,
+        ),
+        work_item=WorkItem(
+            operation=Operation.BRAKE_REPLACEMENT,
+            axle=Axle.FRONT,
+        ),
         candidates=[candidate],
         created_at=datetime(2026, 10, 2, 12, 45),
     )
@@ -135,6 +148,16 @@ def test_cannot_select_candidate_outside_raw_proposal():
 
     proposal = RawProposal(
         proposal_id="PROPOSAL-001",
+        vehicle=Vehicle(
+            registration="ABC-123",
+            make="Toyota",
+            model="Corolla",
+            year=2020,
+        ),
+        work_item=WorkItem(
+            operation=Operation.BRAKE_REPLACEMENT,
+            axle=Axle.FRONT,
+        ),
         candidates=[proposal_candidate],
         created_at=datetime(2026, 10, 2, 12, 45),
     )
