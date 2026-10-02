@@ -33,6 +33,8 @@ def format_raw_proposal(proposal: RawProposal) -> str:
 
     operation = OPERATION_LABELS[work_item.operation]
     axle = AXLE_LABELS[work_item.axle]
+    labour_hours = f"{proposal.labour_time.hours:.2f}".replace(".", ",")
+    labour_source = proposal.labour_time.source.value
 
     lines = [
         "TARJOUSPOHJA",
@@ -44,6 +46,8 @@ def format_raw_proposal(proposal: RawProposal) -> str:
         "",
         "TYÖ",
         f"{operation} – {axle}",
+        f"Työaika: {labour_hours} h",
+        f"Lähde: {labour_source}",
         "",
         "VARAOSAVAIHTOEHDOT",
         "",
