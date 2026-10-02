@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from domain.models.supplier_candidate import SupplierCandidate
+from domain.models.supplier_offer import Availability
 
 
 def test_supplier_candidate_can_be_created():
@@ -12,6 +13,7 @@ def test_supplier_candidate_can_be_created():
         unit_price=Decimal("49.90"),
         total_price=Decimal("49.90"),
         currency="EUR",
+        availability=Availability.IN_STOCK,
     )
 
     assert candidate.product_id == "MOTONET-123456"

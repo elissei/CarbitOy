@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from domain.models.supplier_candidate import SupplierCandidate
+from domain.models.supplier_offer import Availability
 from domain.rules.candidate_sorting import sort_by_total_price
 
 
@@ -13,6 +14,7 @@ def test_candidates_are_sorted_by_total_price():
         unit_price=Decimal("60.00"),
         total_price=Decimal("60.00"),
         currency="EUR",
+        availability=Availability.IN_STOCK,
     )
 
     cheap = SupplierCandidate(
@@ -23,6 +25,7 @@ def test_candidates_are_sorted_by_total_price():
         unit_price=Decimal("40.00"),
         total_price=Decimal("40.00"),
         currency="EUR",
+        availability=Availability.IN_STOCK,
     )
 
     medium = SupplierCandidate(
@@ -33,6 +36,7 @@ def test_candidates_are_sorted_by_total_price():
         unit_price=Decimal("50.00"),
         total_price=Decimal("50.00"),
         currency="EUR",
+        availability=Availability.IN_STOCK,
     )
 
     result = sort_by_total_price(

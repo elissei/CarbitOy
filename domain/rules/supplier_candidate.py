@@ -33,4 +33,5 @@ def create_supplier_candidate(
         unit_price=offer.unit_price,
         total_price=total_price,
         currency=offer.currency,
+        availability=offer.availability,
     )

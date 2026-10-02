@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 
 from domain.models.human_selection import HumanSelection
 from domain.models.raw_proposal import RawProposal
@@ -25,6 +25,7 @@ def create_human_selection(
         unit_price=candidate.unit_price,
         total_price=candidate.total_price,
         currency=candidate.currency,
+        availability=candidate.availability,
         selected_by=selected_by,
         selected_at=selected_at,
     )

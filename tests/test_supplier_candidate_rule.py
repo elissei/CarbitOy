@@ -46,6 +46,7 @@ def test_supplier_candidate_calculates_total_price():
     assert candidate.commercial_quantity_needed == 3
     assert candidate.unit_price == Decimal("49.90")
     assert candidate.total_price == Decimal("149.70")
+    assert candidate.availability == Availability.IN_STOCK
 
 def test_incompatible_product_returns_no_candidate():
     requirement = PartRequirement(

@@ -145,3 +145,72 @@ def test_build_supplier_candidates_filters_incompatible_products_and_offers():
     assert len(candidates) == 1
     assert candidates[0].product_id == "VALID-123"
     assert candidates[0].supplier == "Supplier A"
+
+def test_build_supplier_candidates_filters_availability_and_preserves_status():
+    requirement = PartRequirement(
+        canonical_product_type="brake_pad",
+        axle=Axle.FRONT,
+        required_quantity=2,
+        required_unit=RequirementUnit.PCS,
+    )
+
+    products = []
+    offers = []
+
+    availability_cases = [
+        ("IN-STOCK", Availability.IN_STOCK),
+        ("BACKORDER", Availability.BACKORDER),
+        ("OUT-OF-STOCK", Availability.OUT_OF_STOCK),
+        ("UNKNOWN", Availability.UNKNOWN),
+    ]
+
+    for product_id, availability in availability_cases:
+        products.append(
+            IndexedProduct(
+                product_id=product_id,
+                supplier=product_id,
+                supplier_product_id=product_id,
+                canonical_product_type="brake_pad",
+                axle=Axle.FRONT,
+                package_quantity=2,
+                package_unit=Unit.PCS,
+                commercial_quantity=1,
+                commercial_unit=Unit.SET,
+            )
+        )
+
+        offers.append(
+            SupplierOffer(
+                product_id=product_id,
+                supplier=product_id,
+                supplier_product_id=product_id,
+                unit_price=Decimal("49.90"),
+                currency="EUR",
+                availability=availability,
+            )
+        )
+
+    candidates = build_supplier_candidates(
+        requirement=requirement,
+        products=products,
+        offers=offers,
+    )
+
+    assert len(candidates) == 2
+
+    candidates_by_product_id = {
+        candidate.product_id: candidate
+        for candidate in candidates
+    }
+
+    assert (
+        candidates_by_product_id["IN-STOCK"].availability
+        == Availability.IN_STOCK
+    )
+    assert (
+        candidates_by_product_id["BACKORDER"].availability
+        == Availability.BACKORDER
+    )
+
+    assert "OUT-OF-STOCK" not in candidates_by_product_id
+    assert "UNKNOWN" not in candidates_by_product_id
