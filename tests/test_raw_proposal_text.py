@@ -8,6 +8,7 @@ from domain.models.supplier_offer import Availability
 from domain.models.vehicle import Vehicle
 from domain.models.work_item import Operation, WorkItem
 from presentation.raw_proposal_text import format_raw_proposal
+from domain.models.labour_time import LabourTime, LabourTimeSource
 
 
 def test_format_raw_proposal():
@@ -22,6 +23,10 @@ def test_format_raw_proposal():
         work_item=WorkItem(
             operation=Operation.BRAKE_REPLACEMENT,
             axle=Axle.FRONT,
+        ),
+        labour_time=LabourTime(
+            hours=Decimal("0.8"),
+            source=LabourTimeSource.AUTODATA,
         ),
         created_at=datetime(2026, 10, 2, 14, 30),
         candidates=[
@@ -64,6 +69,8 @@ def test_format_raw_proposal():
     assert "Saatavuus: jälkitoimitus" in result
     assert "Hinta: 49,90 EUR" in result
     assert "Varaosan valitsee päätöksentekijä" in result
+    assert "Työaika: 0,80 h" in result
+    assert "Lähde: AUTODATA" in result
 
 
 def test_format_raw_proposal_without_candidates_requires_human():
@@ -78,6 +85,10 @@ def test_format_raw_proposal_without_candidates_requires_human():
         work_item=WorkItem(
             operation=Operation.BRAKE_REPLACEMENT,
             axle=Axle.FRONT,
+        ),
+        labour_time=LabourTime(
+            hours=Decimal("0.8"),
+            source=LabourTimeSource.AUTODATA,
         ),
         created_at=datetime(2026, 10, 2, 14, 30),
         candidates=[],

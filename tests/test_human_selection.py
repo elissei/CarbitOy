@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from domain.models.labour_time import LabourTime, LabourTimeSource
 
 import pytest
 
@@ -98,6 +99,10 @@ def test_select_candidate_from_raw_proposal():
             operation=Operation.BRAKE_REPLACEMENT,
             axle=Axle.FRONT,
         ),
+        labour_time=LabourTime(
+            hours=Decimal("0.8"),
+            source=LabourTimeSource.AUTODATA,
+        ),
         candidates=[candidate],
         created_at=datetime(2026, 10, 2, 12, 45),
     )
@@ -157,6 +162,10 @@ def test_cannot_select_candidate_outside_raw_proposal():
         work_item=WorkItem(
             operation=Operation.BRAKE_REPLACEMENT,
             axle=Axle.FRONT,
+        ),
+        labour_time=LabourTime(
+            hours=Decimal("0.8"),
+            source=LabourTimeSource.AUTODATA,
         ),
         candidates=[proposal_candidate],
         created_at=datetime(2026, 10, 2, 12, 45),
