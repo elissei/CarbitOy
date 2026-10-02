@@ -3,9 +3,13 @@
 from pydantic import BaseModel, Field
 
 from domain.models.supplier_candidate import SupplierCandidate
+from domain.models.vehicle import Vehicle
+from domain.models.work_item import WorkItem
 
 
 class RawProposal(BaseModel):
     proposal_id: str
+    vehicle: Vehicle
+    work_item: WorkItem
     candidates: list[SupplierCandidate] = Field(default_factory=list)
     created_at: datetime
