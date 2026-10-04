@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from domain.models.labour_cost import LabourCost
 from domain.models.labour_time import LabourTime
@@ -19,3 +19,12 @@ class RawProposal(BaseModel):
     labour_cost: LabourCost
     candidates: list[SupplierCandidate] = Field(default_factory=list)
     created_at: datetime
+
+    @model_validator(mode="after")
+    def validate_labour_hours(self) -> "RawProposal":
+        if self.labour_time.hours != self.labour_cost.hours:
+            raise ValueError(
+                "labour_time.hours must match labour_cost.hours"
+            )
+
+        return self
