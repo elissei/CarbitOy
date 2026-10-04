@@ -10,6 +10,7 @@ from domain.models.enums import Axle
 from domain.models.vehicle import Vehicle
 from domain.models.work_item import Operation, WorkItem
 from domain.rules.human_selection import create_human_selection
+from domain.models.labour_cost import LabourCost
 
 
 def test_create_human_selection_from_candidate():
@@ -103,6 +104,12 @@ def test_select_candidate_from_raw_proposal():
             hours=Decimal("0.8"),
             source=LabourTimeSource.AUTODATA,
         ),
+        labour_cost=LabourCost(
+            hours=Decimal("0.8"),
+            hourly_rate=Decimal("90.00"),
+            total_price=Decimal("72.00"),
+            currency="EUR",
+        ),
         candidates=[candidate],
         created_at=datetime(2026, 10, 2, 12, 45),
     )
@@ -166,6 +173,12 @@ def test_cannot_select_candidate_outside_raw_proposal():
         labour_time=LabourTime(
             hours=Decimal("0.8"),
             source=LabourTimeSource.AUTODATA,
+        ),
+        labour_cost=LabourCost(
+            hours=Decimal("0.8"),
+            hourly_rate=Decimal("90.00"),
+            total_price=Decimal("72.00"),
+            currency="EUR",
         ),
         candidates=[proposal_candidate],
         created_at=datetime(2026, 10, 2, 12, 45),

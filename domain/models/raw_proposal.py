@@ -2,6 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from domain.models.labour_cost import LabourCost
 from domain.models.labour_time import LabourTime
 from domain.models.supplier_candidate import SupplierCandidate
 from domain.models.vehicle import Vehicle
@@ -13,5 +14,6 @@ class RawProposal(BaseModel):
     vehicle: Vehicle
     work_item: WorkItem
     labour_time: LabourTime
+    labour_cost: LabourCost
     candidates: list[SupplierCandidate] = Field(default_factory=list)
     created_at: datetime

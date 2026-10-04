@@ -9,6 +9,7 @@ from domain.models.vehicle import Vehicle
 from domain.models.work_item import Operation, WorkItem
 from presentation.raw_proposal_text import format_raw_proposal
 from domain.models.labour_time import LabourTime, LabourTimeSource
+from domain.models.labour_cost import LabourCost
 
 
 def test_format_raw_proposal():
@@ -27,6 +28,12 @@ def test_format_raw_proposal():
         labour_time=LabourTime(
             hours=Decimal("0.8"),
             source=LabourTimeSource.AUTODATA,
+        ),
+        labour_cost=LabourCost(
+            hours=Decimal("0.8"),
+            hourly_rate=Decimal("90.00"),
+            total_price=Decimal("72.00"),
+            currency="EUR",
         ),
         created_at=datetime(2026, 10, 2, 14, 30),
         candidates=[
@@ -71,6 +78,7 @@ def test_format_raw_proposal():
     assert "Varaosan valitsee päätöksentekijä" in result
     assert "Työaika: 0,80 h" in result
     assert "Lähde: AUTODATA" in result
+    assert "Työn hinta: 72,00 EUR" in result
 
 
 def test_format_raw_proposal_without_candidates_requires_human():
@@ -89,6 +97,12 @@ def test_format_raw_proposal_without_candidates_requires_human():
         labour_time=LabourTime(
             hours=Decimal("0.8"),
             source=LabourTimeSource.AUTODATA,
+        ),
+        labour_cost=LabourCost(
+            hours=Decimal("0.8"),
+            hourly_rate=Decimal("90.00"),
+            total_price=Decimal("72.00"),
+            currency="EUR",
         ),
         created_at=datetime(2026, 10, 2, 14, 30),
         candidates=[],
