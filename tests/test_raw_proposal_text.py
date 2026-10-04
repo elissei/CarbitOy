@@ -10,6 +10,8 @@ from domain.models.work_item import Operation, WorkItem
 from presentation.raw_proposal_text import format_raw_proposal
 from domain.models.labour_time import LabourTime, LabourTimeSource
 from domain.models.labour_cost import LabourCost
+import pytest
+from pydantic import ValidationError
 
 
 def test_format_raw_proposal():
@@ -112,3 +114,32 @@ def test_format_raw_proposal_without_candidates_requires_human():
 
     assert "Ei saatavilla olevia varaosavaihtoehtoja." in result
     assert "Vaatii ihmisen käsittelyn." in result
+
+def test_raw_proposal_rejects_unexpected_fields():
+    with pytest.raises(ValidationError):
+        RawProposal(
+            proposal_id="PROPOSAL-EXTRA",
+            vehicle=Vehicle(
+                registration="ABC-123",
+                make="Toyota",
+                model="Corolla",
+                year=2020,
+            ),
+            work_item=WorkItem(
+                operation=Operation.BRAKE_REPLACEMENT,
+                axle=Axle.FRONT,
+            ),
+            labour_time=LabourTime(
+                hours=Decimal("0.8"),
+                source=LabourTimeSource.AUTODATA,
+            ),
+            labour_cost=LabourCost(
+                hours=Decimal("0.8"),
+                hourly_rate=Decimal("90.00"),
+                total_price=Decimal("72.00"),
+                currency="EUR",
+            ),
+            created_at=datetime(2026, 10, 2, 14, 30),
+            candidates=[],
+            this_field_does_not_exist="should fail",
+        )

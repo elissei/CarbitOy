@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from domain.models.labour_cost import LabourCost
 from domain.models.labour_time import LabourTime
@@ -10,6 +10,8 @@ from domain.models.work_item import WorkItem
 
 
 class RawProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     proposal_id: str
     vehicle: Vehicle
     work_item: WorkItem
