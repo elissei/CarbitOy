@@ -31,6 +31,35 @@ class FinalQuote(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def validate_part_purchase_price(self) -> "FinalQuote":
+        if (
+            self.part_sale_price.purchase_price
+            != self.part_selection.total_price
+        ):
+            raise ValueError(
+                "part_sale_price.purchase_price must match "
+                "part_selection.total_price"
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_currency_consistency(self) -> "FinalQuote":
+        currencies = {
+            self.labour_cost.currency,
+            self.part_selection.currency,
+            self.part_sale_price.currency,
+        }
+
+        if len(currencies) != 1:
+            raise ValueError(
+                "labour cost, part selection, and part sale price "
+                "must use the same currency"
+            )
+
+        return self
+
+    @model_validator(mode="after")
     def validate_total_price(self) -> "FinalQuote":
         expected_total = (
             self.labour_cost.total_price
