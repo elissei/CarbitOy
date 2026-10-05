@@ -29,3 +29,17 @@ class FinalQuote(BaseModel):
             )
 
         return self
+
+    @model_validator(mode="after")
+    def validate_total_price(self) -> "FinalQuote":
+        expected_total = (
+            self.labour_cost.total_price
+            + self.part_sale_price.sale_price
+        )
+
+        if self.total_price != expected_total:
+            raise ValueError(
+                "total_price must equal labour cost plus part sale price"
+            )
+
+        return self

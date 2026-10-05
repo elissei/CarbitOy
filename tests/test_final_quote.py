@@ -111,3 +111,52 @@ def test_final_quote_rejects_selection_from_different_proposal():
                 currency="EUR",
             ),
         )
+
+
+def test_final_quote_rejects_incorrect_total_price():
+    selection = HumanSelection(
+        proposal_id="PROPOSAL-001",
+        product_id="BRAKE-PAD-001",
+        supplier="AUTOPARTS24",
+        supplier_product_id="AP24-123",
+        commercial_quantity_needed=1,
+        unit_price=Decimal("44.90"),
+        total_price=Decimal("44.90"),
+        currency="EUR",
+        availability=Availability.IN_STOCK,
+        selected_by="workshop-owner",
+        selected_at=datetime(2026, 10, 5, 12, 0),
+    )
+
+    with pytest.raises(
+        ValidationError,
+        match="total_price must equal labour cost plus part sale price",
+    ):
+        FinalQuote(
+            quote_id="QUOTE-001",
+            proposal_id="PROPOSAL-001",
+            vehicle=Vehicle(
+                registration="ABC-123",
+                make="Toyota",
+                model="Corolla",
+                year=2020,
+            ),
+            work_item=WorkItem(
+                operation=Operation.BRAKE_REPLACEMENT,
+                axle=Axle.FRONT,
+            ),
+            labour_cost=LabourCost(
+                hours=Decimal("0.8"),
+                hourly_rate=Decimal("90.00"),
+                total_price=Decimal("72.00"),
+                currency="EUR",
+            ),
+            part_selection=selection,
+            part_sale_price=PartSalePrice(
+                purchase_price=Decimal("44.90"),
+                sale_price=Decimal("58.37"),
+                currency="EUR",
+            ),
+            total_price=Decimal("999.99"),
+            created_at=datetime(2026, 10, 5, 12, 5),
+        )
