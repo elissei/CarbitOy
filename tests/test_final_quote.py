@@ -1,7 +1,8 @@
-import pytest
-from pydantic import ValidationError
 from datetime import datetime
 from decimal import Decimal
+
+import pytest
+from pydantic import ValidationError
 
 from domain.models.enums import Axle
 from domain.models.final_quote import FinalQuote
@@ -10,6 +11,7 @@ from domain.models.labour_cost import LabourCost
 from domain.models.supplier_offer import Availability
 from domain.models.vehicle import Vehicle
 from domain.models.work_item import Operation, WorkItem
+from domain.models.part_sale_price import PartSalePrice
 
 
 def test_final_quote():
@@ -47,8 +49,13 @@ def test_final_quote():
             currency="EUR",
         ),
         part_selection=selection,
-        total_price=Decimal("116.90"),
+        total_price=Decimal("130.37"),
         created_at=datetime(2026, 10, 5, 12, 5),
+        part_sale_price=PartSalePrice(
+            purchase_price=Decimal("44.90"),
+            sale_price=Decimal("58.37"),
+            currency="EUR",
+        ),
     )
 
     assert quote.quote_id == "QUOTE-001"
@@ -56,7 +63,9 @@ def test_final_quote():
     assert quote.part_selection.selected_by == "workshop-owner"
     assert quote.labour_cost.total_price == Decimal("72.00")
     assert quote.part_selection.total_price == Decimal("44.90")
-    assert quote.total_price == Decimal("116.90")
+    assert quote.total_price == Decimal("130.37")
+    assert quote.part_sale_price.sale_price == Decimal("58.37")
+
 
 def test_final_quote_rejects_selection_from_different_proposal():
     selection = HumanSelection(
@@ -94,6 +103,11 @@ def test_final_quote_rejects_selection_from_different_proposal():
                 currency="EUR",
             ),
             part_selection=selection,
-            total_price=Decimal("116.90"),
+            total_price=Decimal("130.37"),
             created_at=datetime(2026, 10, 5, 12, 5),
+            part_sale_price=PartSalePrice(
+                purchase_price=Decimal("44.90"),
+                sale_price=Decimal("58.37"),
+                currency="EUR",
+            ),
         )

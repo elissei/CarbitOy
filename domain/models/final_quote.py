@@ -5,6 +5,7 @@ from pydantic import BaseModel, model_validator
 
 from domain.models.human_selection import HumanSelection
 from domain.models.labour_cost import LabourCost
+from domain.models.part_sale_price import PartSalePrice
 from domain.models.vehicle import Vehicle
 from domain.models.work_item import WorkItem
 
@@ -16,6 +17,7 @@ class FinalQuote(BaseModel):
     work_item: WorkItem
     labour_cost: LabourCost
     part_selection: HumanSelection
+    part_sale_price: PartSalePrice
     total_price: Decimal
     created_at: datetime
 
