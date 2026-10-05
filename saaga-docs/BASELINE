@@ -1,8 +1,11 @@
-# Generated: 2026-10-05T00:31:12.071Z
+# Generated: 2026-10-05T01:51:38.752Z
 3cbe3efd3931fb5ef66d1d38c3e8e89abb6eb015 .git
-21ab7d2b106c4ac6b7cf0fede5c19e9f3cbb7b2c .gitignore
+5192383c588411f4bc7646f32d23f4a5211fa2f7 .gitignore
 a06e70f50e78624619911b404618ffe0a627705e AGENTS.md
 77f842fbf3c3a837a2548a737d3823fe06663d11 README.md
+2186bb432941d98dd863b89d5a069ca3f13e3882 docs/notes/README.md
+9ab2b206d9132faf7d21c6623031c501a2360c31 docs/notes/kehityspaivakirja.md
+3c5c24561e87112b39dc4d8f52ecc9ed3bfa9221 docs/notes/paatokset.md
 1b02f3dd0159886c95bbed2c5403f0e2a0cf5918 docs/visualizations/Carbit-arkkitehtuuri.png
 5d8b7fe3066a2182bbb68073c12c4fb8fefb9c22 docs/visualizations/Carbit-toteutetut-paatospuut.pdf
 5d55a41cda6556a5a0c0c8af5370db587d53599a docs/visualizations/README.md
