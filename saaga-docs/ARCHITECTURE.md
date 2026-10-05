@@ -14,7 +14,9 @@ sources:
 
 ## Overall Architecture
 
-CarbitOy is a Python component library for turning vehicle work and part requirements into supplier candidates and proposal data. The repository has no application entry point or CLI. Callers compose the components; [tests](../tests/) show the currently exercised compositions.
+CarbitOy is a system under development for automating an automotive workshop's workflow from work order intake through supplier comparison and human-approved parts selection to a customer quotation.
+
+The current implementation provides Python domain models, business rules, supplier adapter interfaces, and proposal formatting components. A complete application entry point or CLI connecting the end-to-end workflow has not yet been implemented. Callers currently compose the available components; [tests](../tests/) show the currently exercised compositions.
 
 `domain/models` defines the data exchanged across the system. `domain/ontology` interprets part terminology, and `domain/rules` makes matching, coverage, pricing, and selection decisions. `integrations/suppliers` gathers supplier offers through adapters. `presentation` renders a raw proposal as text. The dependency direction is toward the domain: integrations and presentation use domain models, while domain rules also use ontology data. The [visualizations](../docs/visualizations/README.md) distinguish a target architecture from dated source snapshots.
 
