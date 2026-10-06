@@ -51,6 +51,25 @@
       line-height: 1.6;
     }
     footer { margin-top: 20px; color: #526174; font-size: 14px; }
+    button, select {
+      padding: 12px 16px;
+      border: 1px solid #aab7c4;
+      border-radius: 8px;
+      font: inherit;
+    }
+    button { cursor: pointer; background: #172536; color: white; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .controls { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
+    .example { background: white; color: #172536; }
+    .warning { background: #fff3d6; border-left: 4px solid #c88500; }
+    .candidate {
+      padding: 16px;
+      border: 1px solid #dce3e9;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    #result { margin-top: 24px; }
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
@@ -75,12 +94,173 @@
         <strong>Sinä päätät varaosasta ja toimittajasta.</strong><br>
         Tarjous muodostetaan vasta oman valintasi jälkeen.
       </div>
-      <p>Viestin käsittely kytketään seuraavassa toteutusvaiheessa.</p>
+            <label for="mode">Viestin tulkinta</label>
+      <select id="mode">
+        <option value="openai">OpenAI — oikea tulkinta</option>
+        <option value="replay">Tallennettu demotapaus — ei AI-kutsua</option>
+      </select>
+      <div class="controls">
+        <button type="button" class="example" id="example-ready">
+          Esimerkki: etujarrupalat
+        </button>
+        <button type="button" class="example" id="example-diagnosis">
+          Esimerkki: diagnoosin tarve
+        </button>
+        <button type="button" id="process">Käsittele viesti</button>
+      </div>
+      <div id="result" role="status" aria-live="polite" hidden></div>
     </section>
     <footer>
       Demon ajoneuvotiedot, varaosahinnat ja työajat ovat simuloituja.
       Kaikki näytettävät hinnat sisältävät ALV:n.
     </footer>
   </main>
+<script>
+  const message = document.getElementById("message");
+  const mode = document.getElementById("mode");
+  const processButton = document.getElementById("process");
+  const result = document.getElementById("result");
+  let currentIntake = null;
+  let selectedCandidate = null;
+
+  function clearResult() {
+    currentIntake = null;
+    selectedCandidate = null;
+    result.replaceChildren();
+    result.hidden = true;
+  }
+
+  function addText(parent, tag, text) {
+    const element = document.createElement(tag);
+    element.textContent = text;
+    parent.append(element);
+    return element;
+  }
+
+  function euros(value) {
+    return new Intl.NumberFormat("fi-FI", {
+      style: "currency",
+      currency: "EUR"
+    }).format(Number(value));
+  }
+
+  message.addEventListener("input", clearResult);
+  mode.addEventListener("change", clearResult);
+
+  function setExample(text) {
+    clearResult();
+    message.value = text;
+  }
+
+  document.getElementById("example-ready").onclick = () =>
+    setExample("ABC-123, etujarrupalat pitäisi vaihtaa");
+
+  document.getElementById("example-diagnosis").onclick = () =>
+    setExample("ABC-123, autosta kuuluu outoa ääntä edestä");
+
+  processButton.onclick = async () => {
+    clearResult();
+    const submittedMessage = message.value.trim();
+    const submittedMode = mode.value;
+
+    result.hidden = false;
+    if (!submittedMessage) {
+      addText(result, "p", "Kirjoita asiakkaan viesti.");
+      return;
+    }
+
+    processButton.disabled = true;
+    message.disabled = true;
+    mode.disabled = true;
+    document.getElementById("example-ready").disabled = true;
+    document.getElementById("example-diagnosis").disabled = true;
+    addText(result, "p", "Käsitellään viestiä…");
+
+    try {
+      const response = await fetch("/api/intake", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: submittedMessage,
+          mode: submittedMode
+        }),
+        signal: AbortSignal.timeout(30000)
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          typeof data.detail === "string"
+            ? data.detail
+            : "Viestin käsittely epäonnistui."
+        );
+      }
+
+      currentIntake = data;
+      result.replaceChildren();
+      addText(result, "p", data.mode === "openai"
+        ? "Tulkinta: OpenAI"
+        : "Tulkinta: tallennettu demotapaus — ei AI-kutsua");
+
+      if (!data.proposal) {
+        const warning = document.createElement("div");
+        warning.className = "notice warning";
+        result.append(warning);
+        addText(warning, "h2", "⚠ Ihmisen käsittely vaaditaan");
+        addText(warning, "p", "Syy: " + data.human_required_reason);
+        addText(warning, "p", "Asiakkaan kuvaus: " + data.message);
+        return;
+      }
+
+      const proposal = data.proposal;
+      addText(result, "h2", "Valmis varaosavalintaan");
+      addText(result, "p",
+        proposal.vehicle.registration + " · " +
+        proposal.vehicle.make + " " + proposal.vehicle.model +
+        " · Etujarrupalojen vaihto");
+      addText(result, "p",
+        "Simuloitu työaika: " + proposal.labour_time.hours +
+        " h · Työn hinta: " + euros(proposal.labour_cost.total_price));
+      addText(result, "h3", "Valitse varaosa ja toimittaja");
+      addText(result, "p",
+        "Alla ovat simuloidut ostohinnat, sis. ALV. Valintaa ei tehdä automaattisesti.");
+
+      const selectionText = document.createElement("p");
+      proposal.candidates.forEach(candidate => {
+        const label = document.createElement("label");
+        label.className = "candidate";
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "supplier";
+        radio.value = candidate.product_id;
+        radio.onchange = () => {
+          selectedCandidate = candidate;
+          selectionText.textContent =
+            "Oma valintasi: " + candidate.supplier;
+        };
+        label.append(radio, document.createTextNode(
+          " " + candidate.supplier + " · " +
+          candidate.supplier_product_id + " · " +
+          euros(candidate.total_price) + " · Varastossa"
+        ));
+        result.append(label);
+      });
+      result.append(selectionText);
+    } catch (error) {
+      currentIntake = null;
+      selectedCandidate = null;
+      result.replaceChildren();
+      addText(result, "p",
+        error.name === "TimeoutError"
+          ? "Käsittely aikakatkaistiin. Voit yrittää uudelleen tai valita tallennetun demotapauksen."
+          : error.message);
+    } finally {
+      processButton.disabled = false;
+      message.disabled = false;
+      mode.disabled = false;
+      document.getElementById("example-ready").disabled = false;
+      document.getElementById("example-diagnosis").disabled = false;
+    }
+  };
+</script>
 </body>
 </html>
