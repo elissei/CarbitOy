@@ -28,14 +28,17 @@ class FakeResponses:
 
 
 class FakeOpenAI:
-    def __init__(self):
+    def __init__(self, **kwargs):
         self.responses = FakeResponses()
 
 
-def test_openai_customer_request_client_returns_structured_data():
-    client = OpenAICustomerRequestClient()
+def test_openai_customer_request_client_returns_structured_data(monkeypatch):
     fake_openai = FakeOpenAI()
-    client.client = fake_openai
+    monkeypatch.setattr(
+        "integrations.ai.openai_customer_request_client.OpenAI",
+        lambda **kwargs: fake_openai,
+    )
+    client = OpenAICustomerRequestClient()
 
     result = client.interpret_customer_request(
         "ABC-123, etujarrupalat pitäisi vaihtaa"
