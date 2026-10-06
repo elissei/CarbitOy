@@ -16,6 +16,7 @@ class FakeOpenAIClient:
             "operation": "BRAKE_REPLACEMENT",
             "axle": "FRONT",
             "part_types": ["brake_pad"],
+            "diagnosis_required": False,
             "status": "READY",
         }
 
@@ -33,7 +34,9 @@ def test_openai_interpreter_returns_validated_domain_model():
     assert result.operation == Operation.BRAKE_REPLACEMENT
     assert result.axle == Axle.FRONT
     assert result.part_types == ["brake_pad"]
+    assert result.diagnosis_required is False
     assert result.status == InterpretationStatus.READY
+
 
 class InvalidReadyOpenAIClient:
     def interpret_customer_request(
@@ -45,6 +48,7 @@ class InvalidReadyOpenAIClient:
             "operation": None,
             "axle": "FRONT",
             "part_types": ["brake_pad"],
+            "diagnosis_required": False,
             "status": "READY",
         }
 

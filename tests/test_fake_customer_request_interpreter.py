@@ -15,6 +15,7 @@ def test_fake_interpreter_returns_configured_interpretation():
         operation=Operation.BRAKE_REPLACEMENT,
         axle=Axle.FRONT,
         part_types=["brake_pad"],
+        diagnosis_required=False,
         status=InterpretationStatus.READY,
     )
 

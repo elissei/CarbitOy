@@ -12,6 +12,7 @@ class FakeResponse:
             "operation": "BRAKE_REPLACEMENT",
             "axle": "FRONT",
             "part_types": ["brake_pad"],
+            "diagnosis_required": False,
             "status": "READY",
         }
     )
@@ -45,6 +46,7 @@ def test_openai_customer_request_client_returns_structured_data():
         "operation": "BRAKE_REPLACEMENT",
         "axle": "FRONT",
         "part_types": ["brake_pad"],
+        "diagnosis_required": False,
         "status": "READY",
     }
 
@@ -58,3 +60,6 @@ def test_openai_customer_request_client_returns_structured_data():
     assert "Älä diagnosoi" in instructions
     assert "HUMAN_REQUIRED" in instructions
     assert "Älä keksi" in instructions
+    assert "diagnosis_required" in instructions
+    assert "oiretta" in instructions
+    assert "Diagnoositarpeesta ei saa päätellä" in instructions

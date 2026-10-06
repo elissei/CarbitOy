@@ -12,6 +12,7 @@ def test_known_customer_request_can_be_ready():
         operation=Operation.BRAKE_REPLACEMENT,
         axle=Axle.FRONT,
         part_types=["brake_pad"],
+        diagnosis_required=False,
         status=InterpretationStatus.READY,
     )
 
@@ -28,12 +29,14 @@ def test_uncertain_customer_request_can_require_human():
         operation=None,
         axle=Axle.FRONT,
         part_types=[],
+        diagnosis_required=False,
         status=InterpretationStatus.HUMAN_REQUIRED,
     )
 
     assert interpretation.operation is None
     assert interpretation.part_types == []
     assert interpretation.status == InterpretationStatus.HUMAN_REQUIRED
+
 
 def test_ready_request_requires_operation():
     try:
@@ -42,6 +45,7 @@ def test_ready_request_requires_operation():
             operation=None,
             axle=Axle.FRONT,
             part_types=["brake_pad"],
+            diagnosis_required=False,
             status=InterpretationStatus.READY,
         )
     except ValueError:
@@ -59,6 +63,7 @@ def test_ready_request_requires_part_types():
             operation=Operation.BRAKE_REPLACEMENT,
             axle=Axle.FRONT,
             part_types=[],
+            diagnosis_required=False,
             status=InterpretationStatus.READY,
         )
     except ValueError:
@@ -67,4 +72,18 @@ def test_ready_request_requires_part_types():
         raise AssertionError(
             "READY interpretation must require part types"
         )
+
+
+def test_uncertain_symptom_can_require_diagnosis():
+    interpretation = CustomerRequestInterpretation(
+        registration="ABC-123",
+        operation=None,
+        axle=Axle.UNKNOWN,
+        part_types=[],
+        diagnosis_required=True,
+        status=InterpretationStatus.HUMAN_REQUIRED,
+    )
+
+    assert interpretation.diagnosis_required is True
+    assert interpretation.status == InterpretationStatus.HUMAN_REQUIRED
 

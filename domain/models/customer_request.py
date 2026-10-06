@@ -18,6 +18,7 @@ class CustomerRequestInterpretation(BaseModel):
     operation: Operation | None
     axle: Axle
     part_types: list[str]
+    diagnosis_required: bool
     status: InterpretationStatus
 
     @model_validator(mode="after")
