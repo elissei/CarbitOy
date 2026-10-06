@@ -26,7 +26,7 @@ The concepts the rest of the corpus links to most often. Everything else assumes
 What the system does, end to end, in index order.
 
 - [Proposal Decisions](./features/proposal-decisions.md) — Builds and orders supplier candidates, prices labour, renders a proposal, and records a human choice.
-- [Customer Intake](./features/customer-intake.md) — Interprets a customer message, routes requests needing a person, and builds supported work items.
+- [Customer Intake](./features/customer-intake.md) — Interprets messages, routes requests needing a person, and composes ready work items into demo proposals.
 - [Final Quote and Presentation](./features/final-quote.md) — Calculates and validates a final quote, formats Finnish price text, and optionally produces a work description.
 
 ## Indexes

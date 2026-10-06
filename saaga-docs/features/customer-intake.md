@@ -3,6 +3,8 @@ title: "Feature: Customer Intake"
 type: feature
 sources:
   - app/customer_intake_workflow.py
+  - app/demo_intake_workflow.py
+  - app/demo_workflow.py
   - domain/models/customer_request.py
   - domain/models/work_item.py
   - domain/models/part_requirement.py
@@ -36,12 +38,15 @@ Before working with this feature, understand these concepts:
 
 The fake interpreter returns its configured interpretation for any message; the workflow therefore exercises the same status branch without an external call.
 
+`process_demo_customer_message()` composes this intake with the demo proposal helper. It first calls `process_customer_message()`; if no work item is returned, it returns the intake and `proposal=None` without requiring proposal inputs. With a work item, it requires caller-supplied `proposal_id`, `vehicle`, `labour_time`, `products`, `offers`, and `created_at`, then passes the work item and those inputs to `create_demo_proposal()`. Candidate and labour behavior belongs to [Proposal Decisions](./proposal-decisions.md).
+
 ### Validation Rules
 
 - `CustomerRequestInterpretation` forbids extra fields. `READY` requires an operation and at least one part type; `diagnosis_required=True` requires `HUMAN_REQUIRED` status.
 - The interpretation model does not check part-type membership. The work-item rule accepts only `brake_pad` and creates one `SET` requirement for each occurrence, using the interpretation's axle and operation.
 - The work-item rule rejects any status other than `READY`, a missing operation, and every unsupported part type with `ValueError`.
 - The OpenAI prompt instructs the model to avoid diagnosing symptoms, inferring repairs from symptoms, and inventing registration, work, axle, or parts. It directs uncertain or diagnostic requests to `HUMAN_REQUIRED`; these instructions are not all enforced by model validators.
+- If any of the six proposal inputs is `None` after a work item is built, `process_demo_customer_message()` raises `ValueError("READY demo workflow requires proposal data")`. Empty product or offer lists pass this guard.
 
 ### Edge Cases
 
@@ -55,6 +60,7 @@ The fake interpreter returns its configured interpretation for any message; the 
 | Repeated `brake_pad` entries | The rule appends a separate one-`SET` requirement for each entry; it does not deduplicate them. |
 | Unknown axle on a supported part | The rule copies the interpretation's axle into both the work item and requirement. |
 | Interpreter or OpenAI call raises | The exception propagates; the workflow has no retry or fallback branch. |
+| Ready intake builds a work item with other than one part requirement | The downstream demo proposal helper raises `ValueError`; see [Proposal Decisions](./proposal-decisions.md). |
 
 ## Technical Implementation
 
@@ -64,6 +70,7 @@ The fake interpreter returns its configured interpretation for any message; the 
 |--------|------------|---------|
 | `CustomerRequestInterpretation` | `status`, `diagnosis_required`, `operation`, `part_types` | Validated interpreter output; see [Work and Part Data](../concepts/work-and-part-data.md) for its full contract. |
 | `CustomerIntakeResult` | `interpretation`, `work_item` | Workflow result; `work_item` is optional. |
+| `DemoCustomerMessageResult` | `intake`, `proposal` | Dataclass returned by the composed call; `intake` is a `CustomerIntakeResult` and `proposal` is an optional `RawProposal`. |
 | `WorkItem` | `operation`, `axle`, `part_requirements` | Ready request converted into work the later proposal flow can use. |
 
 ### Services/Functions
@@ -71,6 +78,8 @@ The fake interpreter returns its configured interpretation for any message; the 
 | Module | Function/Method | Purpose |
 |---------|--------|---------|
 | `app.customer_intake_workflow` | `process_customer_message()` | Calls the interpreter and branches on status. |
+| `app.demo_intake_workflow` | `process_demo_customer_message()` | Returns intake alone when no work item exists, or intake with a demo proposal. |
+| `app.demo_workflow` | `create_demo_proposal()` | Builds the single-requirement proposal from caller-supplied data. |
 | `domain.rules.customer_request_work_item` | `build_work_item_from_customer_request()` | Converts a ready interpretation to supported requirements. |
 | `CustomerRequestInterpreter` | `interpret()` | Abstract boundary for turning message text into a validated interpretation. |
 | `FakeCustomerRequestInterpreter` | `interpret()` | Returns its configured interpretation for a deterministic caller or test. |
@@ -81,7 +90,7 @@ The fake interpreter returns its configured interpretation for any message; the 
 ## Integration Points
 
 - **Depends on**: [Work and Part Data](../concepts/work-and-part-data.md) contracts and the interpreter supplied by the caller.
-- **Used by**: Callers needing a `WorkItem` for subsequent proposal decisions; see [Architecture](../ARCHITECTURE.md) for module placement.
+- **Used by**: Callers needing a `WorkItem` or the composed demo proposal; see [Architecture](../ARCHITECTURE.md) for module placement.
 - **External systems**: The OpenAI client calls the Responses API through the `openai` SDK. The fake interpreter needs no external service.
 
 The client chooses its model through the constructor's `model` argument, which defaults to `gpt-6-luna`.

@@ -20,15 +20,11 @@ CarbitOy is a system under development for automating an automotive workshop's w
 
 The current Python implementation contains reusable domain contracts and rules, adapter boundaries, application workflows, and text presentation functions.
 
-The `app/` layer now composes two paths: customer-message intake and a single-requirement proposal-to-quote demo. Intake and
-the demo are separate callable workflows; no source file connects them into one entry point. The demo accepts prepared
-products, offers, and labour time from its caller. It creates a proposal and then a quote after a candidate is selected;
-[Proposal Decisions](./features/proposal-decisions.md) and [Final Quote and Presentation](./features/final-quote.md) own
-those steps.
-
-The other path accepts a message and an injected interpreter. It returns either an interpreted request for human handling or
-a work item; [Customer Intake](./features/customer-intake.md) owns its branch and conversion behavior. Neither workflow is
-exposed through a repository CLI.
+The `app/` layer connects customer-message intake to single-requirement proposal creation through
+`app/demo_intake_workflow.py`; callers supply the interpreter, vehicle, labour time, products, offers, and proposal details.
+It also exposes a separate finalization call after a person selects a candidate. [Customer Intake](./features/customer-intake.md)
+owns the intake branch and composition, [Proposal Decisions](./features/proposal-decisions.md) owns candidate and labour rules,
+and [Final Quote and Presentation](./features/final-quote.md) owns quote assembly and output. These are library functions.
 
 ### Dependency direction
 
@@ -96,10 +92,11 @@ depend on the relevant domain models, and the live clients depend on the `openai
 
 ### Application workflows — `app/`
 
-One workflow delegates a message to an injected interpreter and returns an intake result. The demo workflow composes labour
-costing, candidate building, human selection, and final quote creation from caller-supplied data. These functions import
-domain models and rules; intake also imports the interpreter interface. See [Customer Intake](./features/customer-intake.md)
-and [Final Quote and Presentation](./features/final-quote.md) for their respective workflow contracts and limits.
+The application exposes intake, demo proposal, and final quote helpers. `app/demo_intake_workflow.py` calls intake and, when
+it yields a work item, the proposal helper; its separate finalization function delegates to the quote helper. Callers supply
+the interpreter, proposal inputs, and human selection. These modules import domain models and rules; intake uses the
+interpreter interface. See [Customer Intake](./features/customer-intake.md) and
+[Final Quote and Presentation](./features/final-quote.md) for their workflow contracts.
 
 ### Presentation — `presentation/`
 
@@ -111,7 +108,6 @@ presentation imports domain models and rules, and that workflow imports the pres
 
 ## Entry-Point Scope
 
-The public application functions are library entry points for callers that already hold the required message, products,
-offers, labour time, or proposal and selection data. No command-line entry point is present in this repository. Supplier
-search, intake interpretation, and quote description generation are invoked only when callers supply or choose their
-corresponding adapters.
+The public application functions are library entry points. Callers provide the message and interpreter, proposal inputs,
+then a selected candidate and selection metadata for the separate quote finalization call. No command-line entry point is
+present. Supplier search, intake interpretation, and quote description generation depend on caller-chosen adapters.

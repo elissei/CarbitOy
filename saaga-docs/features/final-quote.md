@@ -2,6 +2,7 @@
 title: "Feature: Final Quote and Presentation"
 type: feature
 sources:
+  - app/demo_intake_workflow.py
   - app/demo_workflow.py
   - domain/models/final_quote.py
   - domain/models/human_selection.py
@@ -44,11 +45,7 @@ Before working with this feature, understand these concepts:
 
 `present_final_quote()` does not call `format_final_quote()` or combine the work description with the price text. A caller that needs both outputs must request and compose them separately.
 
-The demo workflow shows the concrete composition:
-
-1. `create_demo_proposal()` takes a vehicle, work item, labour time, products, and offers. It prices labour, builds candidates for the work item's sole part requirement, and creates the proposal.
-2. The caller chooses one proposal candidate and supplies `selected_by` and `selected_at` to `create_demo_final_quote()`.
-3. That helper converts the candidate into a selection, then calls `create_final_quote()`. It does not format or present the resulting quote.
+After the message-to-proposal branch in [Customer Intake](./customer-intake.md), a caller chooses a proposal candidate and supplies selection metadata. `finalize_demo_quote()` delegates to `create_demo_final_quote()`, which records the selection and calls `create_final_quote()`; the wrapper returns a `FinalQuote` without formatting or presenting it.
 
 For example, a selected purchase total of `44.90` becomes a part sale price of `58.37`; with `72.00` labour, the quote total is `130.37`.
 
@@ -102,6 +99,7 @@ The field contracts live in [Work and Part Data](../concepts/work-and-part-data.
 | `presentation.quote_workflow` | `present_final_quote()` | Delegates description creation to a `QuotePresenter`. |
 | `app.demo_workflow` | `create_demo_proposal()` | Composes labour and candidate rules for one requirement. |
 | `app.demo_workflow` | `create_demo_final_quote()` | Selects a candidate from that proposal and creates a quote. |
+| `app.demo_intake_workflow` | `finalize_demo_quote()` | Delegates candidate selection and quote creation to `create_demo_final_quote()`; returns `FinalQuote`. |
 | `integrations.ai.quote_presenter.QuotePresenter` | `present()` | Defines the presentation interface. |
 | `integrations.ai.fake_quote_presenter.FakeQuotePresenter` | `present()` | Returns a supplied description for local or test use. |
 | `integrations.ai.openai_quote_presenter.OpenAIQuotePresenter` | `present()` | Wraps a client's description in output data. |
@@ -122,7 +120,7 @@ Its output separates the vehicle line, parts and labour lines, and total line wi
 ## Integration Points
 
 - **Depends on**: [Proposal Decisions](./proposal-decisions.md) for a chosen candidate, [Work and Part Data](../concepts/work-and-part-data.md) for contracts, and the [Architecture](../ARCHITECTURE.md) module map.
-- **Used by**: Callers composing quote creation and presentation; `app.demo_workflow` is the in-repository composition example.
+- **Used by**: Callers composing quote creation and presentation; the demo entry point also exposes `finalize_demo_quote()`.
 - **External systems**: OpenAI is used only when `OpenAIQuotePresentationClient` is supplied through `OpenAIQuotePresenter`; the fake presenter needs no external service.
 
 ## Extension Guide
