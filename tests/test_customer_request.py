@@ -1,3 +1,5 @@
+import pytest
+
 from domain.models.customer_request import (
     CustomerRequestInterpretation,
     InterpretationStatus,
@@ -87,3 +89,14 @@ def test_uncertain_symptom_can_require_diagnosis():
     assert interpretation.diagnosis_required is True
     assert interpretation.status == InterpretationStatus.HUMAN_REQUIRED
 
+
+def test_diagnosis_required_cannot_be_ready():
+    with pytest.raises(ValueError):
+        CustomerRequestInterpretation(
+            registration="ABC-123",
+            operation=Operation.BRAKE_REPLACEMENT,
+            axle=Axle.FRONT,
+            part_types=["brake_pad"],
+            diagnosis_required=True,
+            status=InterpretationStatus.READY,
+        )

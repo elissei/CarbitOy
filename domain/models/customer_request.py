@@ -25,6 +25,14 @@ class CustomerRequestInterpretation(BaseModel):
     def validate_ready_interpretation(
         self,
     ) -> "CustomerRequestInterpretation":
+        if (
+            self.diagnosis_required
+            and self.status != InterpretationStatus.HUMAN_REQUIRED
+        ):
+            raise ValueError(
+                "diagnosis_required requires HUMAN_REQUIRED status"
+            )
+
         if self.status == InterpretationStatus.READY:
             if self.operation is None:
                 raise ValueError(
