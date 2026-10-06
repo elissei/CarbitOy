@@ -19,13 +19,15 @@ Read in order: the architecture, then the core concepts, then the workflows.
 
 The concepts the rest of the corpus links to most often. Everything else assumes them.
 
-- [Work and Part Data](./concepts/work-and-part-data.md) — Vehicle work, part vocabulary, supplier, labour, proposal, selection, and quote contracts.
+- [Work and Part Data](./concepts/work-and-part-data.md) — Intake interpretation, vehicle work, part vocabulary, supplier, labour, proposal, selection, quote, and presentation contracts.
 
 ## Workflows and Features
 
 What the system does, end to end, in index order.
 
 - [Proposal Decisions](./features/proposal-decisions.md) — Builds and orders supplier candidates, prices labour, renders a proposal, and records a human choice.
+- [Customer Intake](./features/customer-intake.md) — Interprets a customer message, routes requests needing a person, and builds supported work items.
+- [Final Quote and Presentation](./features/final-quote.md) — Calculates and validates a final quote, formats Finnish price text, and optionally produces a work description.
 
 ## Indexes
 
