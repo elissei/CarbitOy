@@ -16,6 +16,11 @@ from integrations.ai.openai_customer_request_client import (
 from integrations.ai.openai_customer_request_interpreter import (
     OpenAICustomerRequestInterpreter,
 )
+from app.proposal_token import sign_proposal
+from itsdangerous import BadSignature, SignatureExpired
+
+from app.browser_demo_finalize import finalize_browser_demo_quote
+from presentation.final_quote_text import format_final_quote
 
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -34,6 +39,24 @@ class IntakeRequest(BaseModel):
 
     message: str = Field(min_length=1, max_length=2000)
     mode: Literal["openai", "replay"]
+
+
+class FinalizeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    proposal_token: str = Field(min_length=1, max_length=20000)
+    selected_product_id: str = Field(min_length=1, max_length=100)
+
+
+def get_signing_secret() -> str:
+    secret = os.environ.get("CARBIT_DEMO_SIGNING_SECRET", "")
+    if len(secret) < 32:
+        raise HTTPException(
+            status_code=503,
+            detail="Demon allekirjoitusavain puuttuu palvelimen asetuksista.",
+        )
+    return secret
+
 
 
 def get_interpreter(mode: str):
@@ -70,6 +93,7 @@ def health() -> dict[str, str]:
 
 @app.post("/api/intake")
 def intake(request: IntakeRequest):
+    signing_secret = get_signing_secret()
     try:
         result = process_browser_demo_message(
             message=request.message,
@@ -111,4 +135,46 @@ def intake(request: IntakeRequest):
             else None
         ),
         "demo_data": True,
+        "proposal_token": (
+            sign_proposal(
+                proposal=result.proposal,
+                mode=request.mode,
+                secret=signing_secret,
+            )
+            if result.proposal is not None
+            else None
+        ),
+    }
+
+@app.post("/api/finalize")
+def finalize(request: FinalizeRequest):
+    signing_secret = get_signing_secret()
+
+    try:
+        quote = finalize_browser_demo_quote(
+            proposal_token=request.proposal_token,
+            selected_product_id=request.selected_product_id,
+            signing_secret=signing_secret,
+        )
+    except SignatureExpired:
+        raise HTTPException(
+            status_code=409,
+            detail="Demotapaus vanheni. Käsittele asiakasviesti uudelleen.",
+        ) from None
+    except BadSignature:
+        raise HTTPException(
+            status_code=400,
+            detail="Proposalin tarkistus epäonnistui. "
+            "Käsittele asiakasviesti uudelleen.",
+        ) from None
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="Varaosavalintaa ei voitu vahvistaa. "
+            "Valitse proposalissa oleva vaihtoehto.",
+        ) from None
+
+    return {
+        "final_quote": quote.model_dump(mode="json"),
+        "quote_text": format_final_quote(quote),
     }

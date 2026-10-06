@@ -3,3 +3,4 @@ uvicorn==0.54.0
 pydantic==2.13.5
 openai==3.24.0
 PyYAML==6.0.2
+itsdangerous==2.2.0

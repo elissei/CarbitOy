@@ -225,6 +225,14 @@
         "Alla ovat simuloidut ostohinnat, sis. ALV. Valintaa ei tehdä automaattisesti.");
 
       const selectionText = document.createElement("p");
+      const quoteButton = document.createElement("button");
+      quoteButton.type = "button";
+      quoteButton.textContent = "Luo tarjous";
+      quoteButton.disabled = true;
+
+      const quotePanel = document.createElement("div");
+      quotePanel.className = "notice";
+      quotePanel.hidden = true;
       proposal.candidates.forEach(candidate => {
         const label = document.createElement("label");
         label.className = "candidate";
@@ -232,10 +240,13 @@
         radio.type = "radio";
         radio.name = "supplier";
         radio.value = candidate.product_id;
-        radio.onchange = () => {
+                radio.onchange = () => {
           selectedCandidate = candidate;
           selectionText.textContent =
             "Oma valintasi: " + candidate.supplier;
+          quoteButton.disabled = false;
+          quotePanel.replaceChildren();
+          quotePanel.hidden = true;
         };
         label.append(radio, document.createTextNode(
           " " + candidate.supplier + " · " +
@@ -244,7 +255,72 @@
         ));
         result.append(label);
       });
-      result.append(selectionText);
+            result.append(selectionText, quoteButton, quotePanel);
+
+      quoteButton.onclick = async () => {
+        if (!currentIntake?.proposal_token || !selectedCandidate) return;
+
+        const token = currentIntake.proposal_token;
+        const productId = selectedCandidate.product_id;
+        const lockedControls = [
+          processButton, message, mode,
+          document.getElementById("example-ready"),
+          document.getElementById("example-diagnosis"),
+          ...result.querySelectorAll('input[name="supplier"]')
+        ];
+
+        quoteButton.disabled = true;
+        lockedControls.forEach(control => control.disabled = true);
+        quotePanel.hidden = false;
+        quotePanel.replaceChildren();
+        addText(quotePanel, "p", "Muodostetaan tarjousta…");
+
+        try {
+          const response = await fetch("/api/finalize", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              proposal_token: token,
+              selected_product_id: productId
+            }),
+            signal: AbortSignal.timeout(30000)
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(
+              typeof data.detail === "string"
+                ? data.detail
+                : "Tarjouksen muodostaminen epäonnistui."
+            );
+          }
+
+          const quote = data.final_quote;
+          quotePanel.replaceChildren();
+          addText(quotePanel, "h2", "Valmis tarjous");
+          addText(quotePanel, "p",
+            "Ihmisen valitsema toimittaja: " +
+            quote.part_selection.supplier);
+          addText(quotePanel, "p",
+            "Varaosat: " + euros(quote.part_sale_price.sale_price));
+          addText(quotePanel, "p",
+            "Työ: " + quote.labour_cost.hours + " h · " +
+            euros(quote.labour_cost.total_price));
+          addText(quotePanel, "h3",
+            "Yhteensä " + euros(quote.total_price) + " sis. ALV");
+
+          const text = addText(quotePanel, "p", data.quote_text);
+          text.style.whiteSpace = "pre-wrap";
+        } catch (error) {
+          quotePanel.replaceChildren();
+          addText(quotePanel, "p",
+            error.name === "TimeoutError"
+              ? "Tarjouksen muodostaminen aikakatkaistiin. Yritä uudelleen."
+              : error.message);
+        } finally {
+          lockedControls.forEach(control => control.disabled = false);
+          quoteButton.disabled = false;
+        }
+      };
     } catch (error) {
       currentIntake = null;
       selectedCandidate = null;
