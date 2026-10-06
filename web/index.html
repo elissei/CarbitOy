@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="fi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Carbit Oy — Tarjoukset</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #f3f5f7;
+      color: #172536;
+      font-family: "Segoe UI", sans-serif;
+    }
+    header { background: #172536; color: white; padding: 24px 32px; }
+    header strong { font-size: 24px; }
+    header span { margin-left: 16px; color: #bbc8d6; }
+    main { max-width: 960px; margin: 36px auto; padding: 0 20px; }
+    .steps { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
+    .steps span {
+      padding: 10px 16px;
+      border-radius: 8px;
+      background: #e5ebf0;
+      font-size: 14px;
+    }
+    .steps .active { background: #172536; color: white; }
+    section {
+      padding: 28px;
+      background: white;
+      border: 1px solid #dce3e9;
+      border-radius: 12px;
+    }
+    h1 { margin: 0 0 12px; font-size: 26px; }
+    p { line-height: 1.6; color: #526174; }
+    label { display: block; margin: 24px 0 10px; font-weight: 600; }
+    textarea {
+      width: 100%;
+      min-height: 140px;
+      padding: 16px;
+      border: 1px solid #aab7c4;
+      border-radius: 8px;
+      font: inherit;
+      resize: vertical;
+    }
+    textarea:focus { outline: 3px solid #b7d8f1; border-color: #226899; }
+    .notice {
+      margin-top: 20px;
+      padding: 16px;
+      background: #eef4f8;
+      border-radius: 8px;
+      line-height: 1.6;
+    }
+    footer { margin-top: 20px; color: #526174; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>CARBIT OY</strong>
+    <span>Tarjousten työpöytä · Demo</span>
+  </header>
+  <main>
+    <nav class="steps" aria-label="Tarjouksen vaiheet">
+      <span class="active" aria-current="step">1. Asiakasviesti</span>
+      <span>2. Ihmisen varaosavalinta</span>
+      <span>3. Valmis tarjous</span>
+    </nav>
+    <section>
+      <h1>Uusi työtiedustelu</h1>
+      <p>Asiakasviesti tulkitaan ennen varaosavaihtoehtojen hakua.
+        Diagnoosia vaativa tapaus ohjataan ihmisen käsittelyyn.</p>
+      <label for="message">Asiakkaan viesti</label>
+      <textarea id="message"
+        placeholder="ABC-123, etujarrupalat pitäisi vaihtaa"></textarea>
+      <div class="notice">
+        <strong>Sinä päätät varaosasta ja toimittajasta.</strong><br>
+        Tarjous muodostetaan vasta oman valintasi jälkeen.
+      </div>
+      <p>Viestin käsittely kytketään seuraavassa toteutusvaiheessa.</p>
+    </section>
+    <footer>
+      Demon ajoneuvotiedot, varaosahinnat ja työajat ovat simuloituja.
+      Kaikki näytettävät hinnat sisältävät ALV:n.
+    </footer>
+  </main>
+</body>
+</html>
