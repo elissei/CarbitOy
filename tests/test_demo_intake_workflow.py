@@ -1,5 +1,6 @@
 from datetime import datetime
 from app.demo_intake_workflow import (
+    finalize_demo_quote,
     process_demo_customer_message,
 )
 
@@ -231,3 +232,108 @@ def test_ready_message_creates_demo_proposal():
     assert result.proposal.work_item == result.intake.work_item
     assert len(result.proposal.candidates) == 1
     assert result.proposal.candidates[0].total_price == 40
+
+
+def test_human_selection_creates_final_quote_from_demo_proposal():
+
+    interpretation = CustomerRequestInterpretation(
+        registration="ABC-123",
+        operation=Operation.BRAKE_REPLACEMENT,
+        axle=Axle.FRONT,
+        part_types=["brake_pad"],
+        diagnosis_required=False,
+        status=InterpretationStatus.READY,
+    )
+
+    work_item = build_work_item_from_customer_request(
+        interpretation
+    )
+
+    vehicle = Vehicle(
+        registration="ABC-123",
+        make="Toyota",
+        model="Corolla",
+        year=2020,
+    )
+
+    labour_time = LabourTime(
+        hours=0.8,
+        source=LabourTimeSource.AUTODATA,
+    )
+
+    products = [
+        IndexedProduct(
+            product_id="PAD-1",
+            supplier="SupplierA",
+            supplier_product_id="A-123",
+            canonical_product_type="brake_pad",
+            axle=Axle.FRONT,
+            package_quantity=1,
+            package_unit=Unit.SET,
+            commercial_quantity=1,
+            commercial_unit=Unit.SET,
+        ),
+        IndexedProduct(
+            product_id="PAD-2",
+            supplier="SupplierB",
+            supplier_product_id="B-456",
+            canonical_product_type="brake_pad",
+            axle=Axle.FRONT,
+            package_quantity=1,
+            package_unit=Unit.SET,
+            commercial_quantity=1,
+            commercial_unit=Unit.SET,
+        ),
+    ]
+
+    offers = [
+        SupplierOffer(
+            product_id="PAD-1",
+            supplier="SupplierA",
+            supplier_product_id="A-123",
+            unit_price="40.00",
+            currency="EUR",
+            availability=Availability.IN_STOCK,
+        ),
+        SupplierOffer(
+            product_id="PAD-2",
+            supplier="SupplierB",
+            supplier_product_id="B-456",
+            unit_price="50.00",
+            currency="EUR",
+            availability=Availability.IN_STOCK,
+        ),
+    ]
+
+    proposal = create_demo_proposal(
+        proposal_id="proposal-1",
+        vehicle=vehicle,
+        work_item=work_item,
+        labour_time=labour_time,
+        products=products,
+        offers=offers,
+        created_at=datetime(
+            2026, 10, 6, 12, 0, 0
+        ),
+    )
+
+    selected_candidate = proposal.candidates[1]
+
+    quote = finalize_demo_quote(
+        quote_id="quote-1",
+        proposal=proposal,
+        selected_candidate=selected_candidate,
+        selected_by="demo-user",
+        selected_at=datetime(
+            2026, 10, 6, 12, 5, 0
+        ),
+        created_at=datetime(
+            2026, 10, 6, 12, 5, 0
+        ),
+    )
+
+    assert quote.part_selection.supplier == "SupplierB"
+    assert quote.part_selection.total_price == 50
+    assert quote.part_sale_price.sale_price == 65
+    assert quote.labour_cost.total_price == 72
+    assert quote.total_price == 137

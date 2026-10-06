@@ -5,10 +5,15 @@ from app.customer_intake_workflow import (
     CustomerIntakeResult,
     process_customer_message,
 )
-from app.demo_workflow import create_demo_proposal
+from app.demo_workflow import (
+    create_demo_final_quote,
+    create_demo_proposal,
+)
+from domain.models.final_quote import FinalQuote
 from domain.models.indexed_product import IndexedProduct
 from domain.models.labour_time import LabourTime
 from domain.models.raw_proposal import RawProposal
+from domain.models.supplier_candidate import SupplierCandidate
 from domain.models.supplier_offer import SupplierOffer
 from domain.models.vehicle import Vehicle
 from integrations.ai.customer_request_interpreter import (
@@ -68,4 +73,22 @@ def process_demo_customer_message(
     return DemoCustomerMessageResult(
         intake=intake,
         proposal=proposal,
+    )
+
+
+def finalize_demo_quote(
+    quote_id: str,
+    proposal: RawProposal,
+    selected_candidate: SupplierCandidate,
+    selected_by: str,
+    selected_at: datetime,
+    created_at: datetime,
+) -> FinalQuote:
+    return create_demo_final_quote(
+        quote_id=quote_id,
+        proposal=proposal,
+        selected_candidate=selected_candidate,
+        selected_by=selected_by,
+        selected_at=selected_at,
+        created_at=created_at,
     )
