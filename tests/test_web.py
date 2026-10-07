@@ -197,3 +197,48 @@ def test_finalize_http_rejects_invalid_token():
         )
 
     assert response.status_code == 400
+
+
+def test_finalize_replay_returns_marked_customer_text():
+    with TestClient(app) as client:
+        token = get_ready_token(client)
+        response = client.post(
+            "/api/finalize",
+            json={
+                "proposal_token": token,
+                "selected_product_id": "PAD-2",
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["presentation_mode"] == "replay"
+    assert data["presentation_status"] == "ready"
+    assert "Vaihdamme autosi etujarrupalat." in data["customer_text"]
+    assert "137.00 € sis. ALV" in data["customer_text"]
+
+
+def test_presentation_failure_preserves_final_quote(monkeypatch):
+    def failing_presenter(mode):
+        raise ValueError("Simulated presentation failure")
+
+    monkeypatch.setattr("app.web.get_presenter", failing_presenter)
+
+    with TestClient(app) as client:
+        token = get_ready_token(client)
+        response = client.post(
+            "/api/finalize",
+            json={
+                "proposal_token": token,
+                "selected_product_id": "PAD-2",
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["presentation_status"] == "failed"
+    assert data["customer_text"] is None
+    assert data["presentation_warning"]
+    assert data["final_quote"]["part_selection"]["supplier"] == "SupplierB"
+    assert float(data["final_quote"]["total_price"]) == 137
+    assert "137.00 € sis. ALV" in data["quote_text"]

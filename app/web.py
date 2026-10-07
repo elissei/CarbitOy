@@ -16,11 +16,16 @@ from integrations.ai.openai_customer_request_client import (
 from integrations.ai.openai_customer_request_interpreter import (
     OpenAICustomerRequestInterpreter,
 )
-from app.proposal_token import sign_proposal
+from app.proposal_token import read_proposal, sign_proposal
 from itsdangerous import BadSignature, SignatureExpired
 
 from app.browser_demo_finalize import finalize_browser_demo_quote
 from presentation.final_quote_text import format_final_quote
+
+from integrations.ai.fake_quote_presenter import FakeQuotePresenter
+from integrations.ai.openai_client import OpenAIQuotePresentationClient
+from integrations.ai.openai_quote_presenter import OpenAIQuotePresenter
+from presentation.browser_quote_text import create_browser_customer_text
 
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -77,6 +82,22 @@ def get_interpreter(mode: str):
     )
     return OpenAICustomerRequestInterpreter(client=client)
 
+
+def get_presenter(mode: str):
+    if mode == "replay":
+        return FakeQuotePresenter(
+            work_description="Vaihdamme autosi etujarrupalat."
+        )
+
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise ValueError("OpenAI-avain puuttuu.")
+
+    client = OpenAIQuotePresentationClient()
+    client.client = client.client.with_options(
+        timeout=20.0,
+        max_retries=0,
+    )
+    return OpenAIQuotePresenter(client=client)
 
 @app.get("/", response_class=FileResponse)
 def index() -> FileResponse:
@@ -156,6 +177,10 @@ def finalize(request: FinalizeRequest):
             selected_product_id=request.selected_product_id,
             signing_secret=signing_secret,
         )
+        envelope = read_proposal(
+            request.proposal_token,
+            signing_secret,
+        )
     except SignatureExpired:
         raise HTTPException(
             status_code=409,
@@ -174,7 +199,28 @@ def finalize(request: FinalizeRequest):
             "Valitse proposalissa oleva vaihtoehto.",
         ) from None
 
+    customer_text = None
+    presentation_status = "ready"
+    presentation_warning = None
+
+    try:
+        customer_text = create_browser_customer_text(
+            quote=quote,
+            presenter=get_presenter(envelope.mode),
+        )
+    except (OpenAIError, ValueError):
+        logger.warning("Customer text presentation failed")
+        presentation_status = "failed"
+        presentation_warning = (
+            "Asiakastekstin muotoilu epäonnistui. "
+            "Tarjouksen hinnat ja varaosavalinta ovat valmiit."
+        )
+
     return {
         "final_quote": quote.model_dump(mode="json"),
         "quote_text": format_final_quote(quote),
+        "customer_text": customer_text,
+        "presentation_mode": envelope.mode,
+        "presentation_status": presentation_status,
+        "presentation_warning": presentation_warning,
     }

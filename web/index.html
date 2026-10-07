@@ -308,7 +308,25 @@
           addText(quotePanel, "h3",
             "Yhteensä " + euros(quote.total_price) + " sis. ALV");
 
-          const text = addText(quotePanel, "p", data.quote_text);
+                    addText(quotePanel, "h3", "Asiakkaalle lähetettävä teksti");
+
+          if (data.presentation_warning) {
+            addText(quotePanel, "p", data.presentation_warning);
+          }
+
+          addText(quotePanel, "p",
+            data.presentation_status === "ready"
+              ? (data.presentation_mode === "openai"
+                  ? "Työn kuvaus: OpenAI · hinnat: domain"
+                  : "Työn kuvaus: tallennettu demoteksti · ei AI-kutsua")
+              : "Rakenteinen tarjous · AI-muotoilu ei onnistunut"
+          );
+
+          const text = addText(
+            quotePanel,
+            "p",
+            data.customer_text || data.quote_text
+          );
           text.style.whiteSpace = "pre-wrap";
         } catch (error) {
           quotePanel.replaceChildren();
