@@ -123,7 +123,20 @@
   let currentIntake = null;
   let selectedCandidate = null;
 
+  function setStep(step) {
+    document.querySelectorAll(".steps span").forEach((element, index) => {
+      const active = index + 1 === step;
+      element.classList.toggle("active", active);
+      if (active) {
+        element.setAttribute("aria-current", "step");
+      } else {
+        element.removeAttribute("aria-current");
+      }
+    });
+  }
+
   function clearResult() {
+    setStep(1);
     currentIntake = null;
     selectedCandidate = null;
     result.replaceChildren();
@@ -212,6 +225,7 @@
       }
 
       const proposal = data.proposal;
+      setStep(2);
       addText(result, "h2", "Valmis varaosavalintaan");
       addText(result, "p",
         proposal.vehicle.registration + " · " +
@@ -241,6 +255,7 @@
         radio.name = "supplier";
         radio.value = candidate.product_id;
                 radio.onchange = () => {
+          setStep(2);
           selectedCandidate = candidate;
           selectionText.textContent =
             "Oma valintasi: " + candidate.supplier;
@@ -295,6 +310,7 @@
           }
 
           const quote = data.final_quote;
+          setStep(3);
           quotePanel.replaceChildren();
           addText(quotePanel, "h2", "Valmis tarjous");
           addText(quotePanel, "p",
