@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="fi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Carbit työjono</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Carbit työjonon etusivu">
+        <span class="brand-mark">C</span>
+        <span>Carbit <small>Työjono</small></span>
+      </a>
+      <button class="primary compact" id="new-work-button" type="button">Uusi tiedustelu</button>
+    </header>
+
+    <main class="shell">
+      <section class="work-list-panel" aria-labelledby="work-list-title">
+        <div class="section-heading">
+          <div>
+            <p class="overline">Paikallinen työtila</p>
+            <h1 id="work-list-title">Työtiedustelut</h1>
+          </div>
+          <span id="work-count" class="count"></span>
+        </div>
+        <div id="work-list" class="work-list" aria-live="polite"></div>
+      </section>
+
+      <section class="detail-panel" id="detail-panel" aria-live="polite">
+        <div class="empty-state" id="empty-state">
+          <div class="empty-icon">+</div>
+          <h2>Aloita uusi tiedustelu</h2>
+          <p>Tallenna rekisterinumero ja asiakkaan alkuperäinen työkuvaus. Työajan voi lisätä myöhemmin.</p>
+          <button class="primary" type="button" data-open-new>Uusi tiedustelu</button>
+        </div>
+
+        <article id="work-detail" class="hidden">
+          <div class="detail-heading">
+            <div>
+              <p class="overline">Työtiedustelu</p>
+              <h2 id="detail-registration"></h2>
+            </div>
+            <span class="status">Kesken</span>
+          </div>
+          <dl class="request-summary">
+            <div><dt>Asiakkaan kuvaus</dt><dd id="detail-description"></dd></div>
+            <div><dt>Luotu</dt><dd id="detail-created"></dd></div>
+          </dl>
+
+          <form id="labour-form" class="stacked-form">
+            <div class="form-heading">
+              <div><h3>Autodata-työaika</h3><p>Kirjaa tarkistettu ohjeaika sellaisenaan.</p></div>
+              <span class="rate">90 €/h sis. ALV 25,5 %</span>
+            </div>
+            <div class="form-grid">
+              <label>Työaika (h)<input name="hours" type="number" min="0" step="any" required></label>
+              <label>Kirjaaja<input name="recorded_by" required maxlength="200"></label>
+              <label class="wide">Autodatan työn kuvaus<textarea name="work_description" rows="3" required maxlength="2000"></textarea></label>
+              <label class="wide">Autodata-viite (valinnainen)<input name="autodata_reference" maxlength="500"></label>
+            </div>
+            <div id="price-summary" class="price-summary hidden"></div>
+            <p class="form-error hidden" id="labour-error" role="alert"></p>
+            <div class="form-actions">
+              <p class="notice">Työkustannus on laskelma, ei hyväksytty lopullinen tarjous.</p>
+              <button class="primary" type="submit">Tallenna työaika</button>
+            </div>
+          </form>
+
+          <section class="history">
+            <h3>Tapahtumahistoria</h3>
+            <ol id="event-list"></ol>
+          </section>
+        </article>
+      </section>
+    </main>
+
+    <dialog id="new-work-dialog">
+      <form id="new-work-form" class="dialog-form">
+        <div class="dialog-heading"><div><p class="overline">Uusi työ</p><h2>Uusi työtiedustelu</h2></div><button class="icon-button" type="button" data-close aria-label="Sulje">×</button></div>
+        <label>Rekisterinumero<input name="registration" required maxlength="20" autocomplete="off"></label>
+        <label>Asiakkaan alkuperäinen työkuvaus<textarea name="customer_description" rows="5" required maxlength="4000"></textarea></label>
+        <label>Kirjaaja<input name="actor" required maxlength="200"></label>
+        <p class="form-error hidden" id="new-work-error" role="alert"></p>
+        <div class="dialog-actions"><button class="secondary" type="button" data-close>Peruuta</button><button class="primary" type="submit">Tallenna tiedustelu</button></div>
+      </form>
+    </dialog>
+    <div id="toast" class="toast hidden" role="status"></div>
+  </body>
+</html>

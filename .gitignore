@@ -1,6 +1,7 @@
 ﻿__pycache__/
 *.py[cod]
 .pytest_cache/
+.test-tmp/
 .venv/
 venv/
 .env
@@ -10,3 +11,18 @@ venv/
 
 # Local Obsidian settings
 .obsidian/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+var/
+logs/
+*.log

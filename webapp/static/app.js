@@ -1,0 +1,235 @@
+const state = {
+  works: [], selected: null, selectionEpoch: 0, listEpoch: 0,
+  labourPending: false, createPending: false, creationKey: null
+};
+const list = document.querySelector("#work-list");
+const count = document.querySelector("#work-count");
+const detail = document.querySelector("#work-detail");
+const empty = document.querySelector("#empty-state");
+const dialog = document.querySelector("#new-work-dialog");
+const newForm = document.querySelector("#new-work-form");
+const labourForm = document.querySelector("#labour-form");
+const moneyFormatter = new Intl.NumberFormat("fi-FI", {
+  style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2
+});
+const formatMoney = (value) => moneyFormatter.format(value);
+const formatDate = (value) => new Intl.DateTimeFormat("fi-FI", {
+  dateStyle: "short", timeStyle: "short"
+}).format(new Date(value));
+
+const fieldNames = {
+  registration: "Rekisterinumero", customer_description: "Asiakkaan alkuperäinen työkuvaus",
+  actor: "Kirjaaja", recorded_by: "Kirjaaja", hours: "Työaika",
+  work_description: "Autodatan työn kuvaus", autodata_reference: "Autodata-viite",
+  version: "Työn versio", idempotency_key: "Lähetysavain"
+};
+
+function formatApiError(detail) {
+  if (typeof detail === "string") return detail;
+  if (!Array.isArray(detail)) return "Pyyntö epäonnistui. Yritä uudelleen.";
+  return detail.map((error) => {
+    const field = fieldNames[error.loc?.at(-1)] || "Pyyntö";
+    let message;
+    switch (error.type) {
+      case "missing": message = "Kenttä on pakollinen."; break;
+      case "string_too_short": message = "Kenttä ei voi olla tyhjä."; break;
+      case "string_too_long": message = `Enintään ${error.ctx?.max_length} merkkiä.`; break;
+      case "greater_than": message = `Arvon on oltava suurempi kuin ${error.ctx?.gt}.`; break;
+      case "greater_than_equal": message = `Arvon on oltava vähintään ${error.ctx?.ge}.`; break;
+      case "decimal_parsing":
+      case "decimal_type":
+      case "finite_number": message = "Anna kelvollinen, äärellinen numero."; break;
+      case "int_parsing":
+      case "int_type": message = "Anna kokonaisluku."; break;
+      case "uuid_parsing": message = "Lähetysavain on virheellinen. Avaa uusi tiedustelu."; break;
+      default:
+        message = error.msg?.includes("Kenttä ei voi olla tyhjä")
+          ? "Kenttä ei voi olla tyhjä." : "Tarkista kentän arvo.";
+    }
+    return `${field}: ${message}`;
+  }).join("\n");
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) }
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(formatApiError(body.detail));
+  }
+  return response.json();
+}
+
+let toastTimer;
+function showToast(message) {
+  const toast = document.querySelector("#toast");
+  window.clearTimeout(toastTimer);
+  toast.textContent = message;
+  toast.classList.remove("hidden");
+  toastTimer = window.setTimeout(() => toast.classList.add("hidden"), 4200);
+}
+
+function renderList() {
+  count.textContent = `${state.works.length} kpl`;
+  if (!state.works.length) {
+    list.innerHTML = '<p class="empty-list">Ei tallennettuja tiedusteluja.</p>';
+    return;
+  }
+  list.replaceChildren(...state.works.map((work) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `work-row${state.selected?.id === work.id ? " active" : ""}`;
+    button.innerHTML = '<strong></strong><span class="description"></span><span class="work-meta"><span>Kesken</span><span></span></span>';
+    button.querySelector("strong").textContent = work.registration;
+    button.querySelector(".description").textContent = work.customer_description;
+    button.querySelector(".work-meta span:last-child").textContent = formatDate(work.updated_at);
+    button.addEventListener("click", () => openWork(work.id));
+    return button;
+  }));
+}
+
+function renderDetail() {
+  const work = state.selected;
+  empty.classList.toggle("hidden", Boolean(work));
+  detail.classList.toggle("hidden", !work);
+  document.querySelector("#labour-error").classList.add("hidden");
+  labourForm.dataset.workId = work?.id || "";
+  labourForm.dataset.version = work?.version || "";
+  labourForm.querySelector("button[type=submit]").disabled = state.labourPending;
+  if (!work) return;
+  document.querySelector("#detail-registration").textContent = work.registration;
+  document.querySelector("#detail-description").textContent = work.customer_description;
+  document.querySelector("#detail-created").textContent = formatDate(work.created_at);
+  labourForm.elements.hours.value = work.labour_hours || "";
+  labourForm.elements.work_description.value = work.labour_work_description || "";
+  labourForm.elements.recorded_by.value = work.labour_recorded_by || "";
+  labourForm.elements.autodata_reference.value = work.autodata_reference || "";
+  const price = document.querySelector("#price-summary");
+  price.classList.toggle("hidden", !work.total_price);
+  if (work.total_price) {
+    price.replaceChildren(...[
+      ["Työkustannus", work.total_price], ["Veroton", work.net_price], ["ALV 25,5 %", work.vat_price]
+    ].map(([label, value]) => {
+      const item = document.createElement("span");
+      item.textContent = label;
+      const amount = document.createElement("strong");
+      amount.textContent = formatMoney(value);
+      item.append(amount);
+      return item;
+    }));
+  }
+  document.querySelector("#event-list").replaceChildren(...work.events.map((event) => {
+    const item = document.createElement("li");
+    item.innerHTML = "<strong></strong><span></span>";
+    item.querySelector("strong").textContent = event.event_type === "TIEDUSTELU_LUOTU"
+      ? "Tiedustelu luotu" : "Autodata-työaika kirjattu";
+    item.querySelector("span").textContent = `${formatDate(event.occurred_at)} · ${event.actor}`;
+    return item;
+  }));
+}
+
+async function loadWorks() {
+  const epoch = ++state.listEpoch;
+  const works = await api("/api/works");
+  if (epoch !== state.listEpoch) return;
+  state.works = works;
+  renderList();
+}
+
+async function openWork(id) {
+  const epoch = ++state.selectionEpoch;
+  state.selected = null;
+  renderList();
+  renderDetail();
+  try {
+    const work = await api(`/api/works/${id}`);
+    if (epoch !== state.selectionEpoch) return;
+    state.selected = work;
+    renderList();
+    renderDetail();
+  } catch (problem) {
+    if (epoch === state.selectionEpoch) showToast(problem.message);
+  }
+}
+
+function openNewDialog() {
+  if (state.createPending) return;
+  newForm.reset();
+  state.creationKey = crypto.randomUUID();
+  document.querySelector("#new-work-error").classList.add("hidden");
+  dialog.showModal();
+  newForm.elements.registration.focus();
+}
+
+document.querySelector("#new-work-button").addEventListener("click", openNewDialog);
+document.querySelectorAll("[data-open-new]").forEach((button) => button.addEventListener("click", openNewDialog));
+document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => {
+  if (!state.createPending) dialog.close();
+}));
+dialog.addEventListener("cancel", (event) => {
+  if (state.createPending) event.preventDefault();
+});
+
+newForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (state.createPending) return;
+  const error = document.querySelector("#new-work-error");
+  error.classList.add("hidden");
+  const data = Object.fromEntries(new FormData(newForm));
+  data.idempotency_key = state.creationKey;
+  const epoch = state.selectionEpoch;
+  state.createPending = true;
+  Array.from(newForm.elements).forEach((control) => { control.disabled = true; });
+  try {
+    const created = await api("/api/works", { method: "POST", body: JSON.stringify(data) });
+    dialog.close();
+    state.creationKey = null;
+    newForm.reset();
+    showToast("Tiedustelu tallennettiin.");
+    if (epoch === state.selectionEpoch) await openWork(created.id);
+    loadWorks().catch(() => showToast("Tiedustelu tallennettiin, mutta työlistan päivitys epäonnistui."));
+  } catch (problem) {
+    error.textContent = problem.message;
+    error.classList.remove("hidden");
+  } finally {
+    state.createPending = false;
+    Array.from(newForm.elements).forEach((control) => { control.disabled = false; });
+  }
+});
+
+labourForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const work = state.selected;
+  if (state.labourPending || !work || labourForm.dataset.workId !== work.id
+      || Number(labourForm.dataset.version) !== work.version) return;
+  const epoch = state.selectionEpoch;
+  const data = Object.fromEntries(new FormData(labourForm));
+  data.version = work.version;
+  const error = document.querySelector("#labour-error");
+  error.classList.add("hidden");
+  state.labourPending = true;
+  labourForm.querySelector("button[type=submit]").disabled = true;
+  try {
+    const saved = await api(`/api/works/${work.id}/labour`, {
+      method: "PUT", body: JSON.stringify(data)
+    });
+    if (epoch === state.selectionEpoch && state.selected?.id === work.id) {
+      state.selected = saved;
+      renderDetail();
+      showToast("Työaika ja kustannus tallennettiin.");
+    }
+    loadWorks().catch(() => showToast("Työaika tallennettiin, mutta työlistan päivitys epäonnistui."));
+  } catch (problem) {
+    if (epoch === state.selectionEpoch && state.selected?.id === work.id) {
+      error.textContent = problem.message;
+      error.classList.remove("hidden");
+    }
+  } finally {
+    state.labourPending = false;
+    labourForm.querySelector("button[type=submit]").disabled = false;
+  }
+});
+
+loadWorks().catch((problem) => showToast(problem.message));

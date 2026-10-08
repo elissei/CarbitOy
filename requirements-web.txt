@@ -1,0 +1,6 @@
+fastapi>=0.115,<1
+httpx>=0.27,<1
+openai>=2,<3
+playwright>=1.55,<2
+pytest>=8,<10
+uvicorn[standard]>=0.32,<1
