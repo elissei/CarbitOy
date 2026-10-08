@@ -1,8 +1,16 @@
 ﻿__pycache__/
 *.py[cod]
 .pytest_cache/
+.test-tmp/
 .venv/
 venv/
 .env
 .env.*
 !.env.example
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+logs/
+*.log
