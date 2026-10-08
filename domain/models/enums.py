@@ -6,3 +6,11 @@ class Axle(str, Enum):
     REAR = "REAR"
     BOTH = "BOTH"
     UNKNOWN = "UNKNOWN"
+
+
+class Side(str, Enum):
+    LEFT = "LEFT"
+    RIGHT = "RIGHT"
+    BOTH = "BOTH"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    UNKNOWN = "UNKNOWN"
