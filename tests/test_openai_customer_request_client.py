@@ -1,5 +1,5 @@
 import json
-
+from unittest.mock import patch
 from integrations.ai.openai_customer_request_client import (
     OpenAICustomerRequestClient,
 )
@@ -32,10 +32,15 @@ class FakeOpenAI:
         self.responses = FakeResponses()
 
 
+
 def test_openai_customer_request_client_returns_structured_data():
-    client = OpenAICustomerRequestClient()
     fake_openai = FakeOpenAI()
-    client.client = fake_openai
+
+    with patch(
+        "integrations.ai.openai_customer_request_client.OpenAI",
+        return_value=fake_openai,
+    ):
+        client = OpenAICustomerRequestClient()
 
     result = client.interpret_customer_request(
         "ABC-123, etujarrupalat pitäisi vaihtaa"
