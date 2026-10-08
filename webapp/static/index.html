@@ -61,6 +61,7 @@
               <label class="wide">Autodata-viite (valinnainen)<input name="autodata_reference" maxlength="500"></label>
             </div>
             <div id="price-summary" class="price-summary hidden"></div>
+            <p class="form-error hidden" id="labour-error" role="alert"></p>
             <div class="form-actions">
               <p class="notice">Työkustannus on laskelma, ei hyväksytty lopullinen tarjous.</p>
               <button class="primary" type="submit">Tallenna työaika</button>
@@ -81,7 +82,7 @@
         <label>Rekisterinumero<input name="registration" required maxlength="20" autocomplete="off"></label>
         <label>Asiakkaan alkuperäinen työkuvaus<textarea name="customer_description" rows="5" required maxlength="4000"></textarea></label>
         <label>Kirjaaja<input name="actor" required maxlength="200"></label>
-        <p class="form-error hidden" id="new-work-error"></p>
+        <p class="form-error hidden" id="new-work-error" role="alert"></p>
         <div class="dialog-actions"><button class="secondary" type="button" data-close>Peruuta</button><button class="primary" type="submit">Tallenna tiedustelu</button></div>
       </form>
     </dialog>

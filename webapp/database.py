@@ -37,15 +37,27 @@ CREATE TABLE IF NOT EXISTS work_events (
     occurred_at TEXT NOT NULL,
     event_type TEXT NOT NULL,
     actor TEXT NOT NULL,
-    details_json TEXT NOT NULL
+    details_json TEXT NOT NULL,
+    work_version INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_work_events_work_id
 ON work_events(work_id, id);
+
+CREATE TABLE IF NOT EXISTS inquiry_creation_requests (
+    idempotency_key TEXT PRIMARY KEY,
+    request_json TEXT NOT NULL,
+    work_id TEXT NOT NULL REFERENCES work_inquiries(id),
+    response_json TEXT NOT NULL
+);
 """
 
 
 class VersionConflictError(Exception):
+    pass
+
+
+class IdempotencyConflictError(Exception):
     pass
 
 
@@ -63,7 +75,19 @@ class WorkRepository:
 
     def initialize(self) -> None:
         with self._connect() as connection:
-            connection.executescript(SCHEMA)
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                for statement in SCHEMA.split(";"):
+                    if statement.strip():
+                        connection.execute(statement)
+                columns = {
+                    row["name"]
+                    for row in connection.execute("PRAGMA table_info(work_events)")
+                }
+                if "work_version" not in columns:
+                    connection.execute(
+                        "ALTER TABLE work_events ADD COLUMN work_version INTEGER"
+                    )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -81,6 +105,7 @@ class WorkRepository:
         registration: str,
         customer_description: str,
         actor: str,
+        idempotency_key: str,
     ) -> dict[str, Any]:
         work_id = str(uuid4())
         now = utc_now()
@@ -88,8 +113,21 @@ class WorkRepository:
             "registration": registration,
             "customer_description": customer_description,
         }
+        request_json = json.dumps(
+            {**details, "actor": actor}, ensure_ascii=False, sort_keys=True
+        )
         with self._connect() as connection:
             with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                previous = connection.execute(
+                    "SELECT request_json, response_json FROM inquiry_creation_requests "
+                    "WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+                if previous is not None:
+                    if previous["request_json"] != request_json:
+                        raise IdempotencyConflictError(idempotency_key)
+                    return json.loads(previous["response_json"])
                 connection.execute(
                     """
                     INSERT INTO work_inquiries (
@@ -106,8 +144,19 @@ class WorkRepository:
                     event_type="TIEDUSTELU_LUOTU",
                     actor=actor,
                     details=details,
+                    work_version=1,
                 )
-        return self.get_work(work_id)
+                result = self._read_work(connection, work_id)
+                connection.execute(
+                    "INSERT INTO inquiry_creation_requests "
+                    "(idempotency_key, request_json, work_id, response_json) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        idempotency_key, request_json, work_id,
+                        json.dumps(result, ensure_ascii=False),
+                    ),
+                )
+        return result
 
     def list_works(self) -> list[dict[str, Any]]:
         with self._connect() as connection:
@@ -118,24 +167,31 @@ class WorkRepository:
 
     def get_work(self, work_id: str) -> dict[str, Any]:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM work_inquiries WHERE id = ?", (work_id,)
-            ).fetchone()
-            if row is None:
-                raise WorkNotFoundError(work_id)
-            event_rows = connection.execute(
-                """
-                SELECT occurred_at, event_type, actor, details_json
-                FROM work_events WHERE work_id = ? ORDER BY id DESC
-                """,
-                (work_id,),
-            ).fetchall()
+            with connection:
+                connection.execute("BEGIN")
+                return self._read_work(connection, work_id)
+
+    @staticmethod
+    def _read_work(connection: sqlite3.Connection, work_id: str) -> dict[str, Any]:
+        row = connection.execute(
+            "SELECT * FROM work_inquiries WHERE id = ?", (work_id,)
+        ).fetchone()
+        if row is None:
+            raise WorkNotFoundError(work_id)
+        event_rows = connection.execute(
+            """
+            SELECT occurred_at, event_type, actor, details_json, work_version
+            FROM work_events WHERE work_id = ? ORDER BY id DESC
+            """,
+            (work_id,),
+        ).fetchall()
         result = dict(row)
         result["events"] = [
             {
                 "occurred_at": event["occurred_at"],
                 "event_type": event["event_type"],
                 "actor": event["actor"],
+                "work_version": event["work_version"],
                 "details": json.loads(event["details_json"]),
             }
             for event in event_rows
@@ -186,8 +242,10 @@ class WorkRepository:
                     event_type="AUTODATA_TYOAIKA_KIRJATTU",
                     actor=labour["recorded_by"],
                     details=dict(labour),
+                    work_version=expected_version + 1,
                 )
-        return self.get_work(work_id)
+                result = self._read_work(connection, work_id)
+        return result
 
     @staticmethod
     def _insert_event(
@@ -198,12 +256,13 @@ class WorkRepository:
         event_type: str,
         actor: str,
         details: dict[str, Any],
+        work_version: int,
     ) -> None:
         connection.execute(
             """
             INSERT INTO work_events (
-                work_id, occurred_at, event_type, actor, details_json
-            ) VALUES (?, ?, ?, ?, ?)
+                work_id, occurred_at, event_type, actor, details_json, work_version
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 work_id,
@@ -211,5 +270,6 @@ class WorkRepository:
                 event_type,
                 actor,
                 json.dumps(details, ensure_ascii=False),
+                work_version,
             ),
         )

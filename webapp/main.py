@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, Overflow
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from domain.models.labour_time import LabourTime, LabourTimeSource
 from services.labour_pricing import (
@@ -17,6 +18,7 @@ from services.labour_pricing import (
     split_inclusive_vat,
 )
 from webapp.database import (
+    IdempotencyConflictError,
     VersionConflictError,
     WorkNotFoundError,
     WorkRepository,
@@ -33,6 +35,7 @@ class CreateWorkRequest(BaseModel):
     registration: str = Field(min_length=1, max_length=20)
     customer_description: str = Field(min_length=1, max_length=4000)
     actor: str = Field(min_length=1, max_length=200)
+    idempotency_key: UUID
 
     @field_validator("registration", "customer_description", "actor")
     @classmethod
@@ -99,11 +102,21 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
 
     @app.post("/api/works", status_code=status.HTTP_201_CREATED)
     def create_work(payload: CreateWorkRequest, request: Request):
-        return request.app.state.repository.create_work(
-            registration=payload.registration,
-            customer_description=payload.customer_description,
-            actor=payload.actor,
-        )
+        try:
+            return request.app.state.repository.create_work(
+                registration=payload.registration,
+                customer_description=payload.customer_description,
+                actor=payload.actor,
+                idempotency_key=str(payload.idempotency_key),
+            )
+        except IdempotencyConflictError as error:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Samaa lähetysavainta on jo käytetty eri tiedoilla. "
+                    "Avaa uusi tiedustelu aloittaaksesi erillisen kirjauksen."
+                ),
+            ) from error
 
     @app.get("/api/works/{work_id}")
     def get_work(work_id: str, request: Request):
@@ -114,15 +127,24 @@ def create_app(database_path: str | Path | None = None) -> FastAPI:
 
     @app.put("/api/works/{work_id}/labour")
     def record_labour(work_id: str, payload: RecordLabourRequest, request: Request):
-        labour_time = LabourTime(
-            hours=payload.hours,
-            source=LabourTimeSource.MANUAL_AUTODATA,
-            work_description=payload.work_description,
-            autodata_reference=payload.autodata_reference,
-            recorded_by=payload.recorded_by,
-        )
-        labour_cost = calculate_labour_cost(labour_time)
-        net_price, vat_price = split_inclusive_vat(labour_cost.total_price)
+        try:
+            labour_time = LabourTime(
+                hours=payload.hours,
+                source=LabourTimeSource.MANUAL_AUTODATA,
+                work_description=payload.work_description,
+                autodata_reference=payload.autodata_reference,
+                recorded_by=payload.recorded_by,
+            )
+            labour_cost = calculate_labour_cost(labour_time)
+            net_price, vat_price = split_inclusive_vat(labour_cost.total_price)
+        except (ValidationError, InvalidOperation, Overflow) as error:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Työaika: annettu aika ei tuota laskettavissa olevaa "
+                    "positiivista senttihintaa. Tarkista Autodatasta kirjattu aika."
+                ),
+            ) from error
         snapshot = {
             "hours": str(labour_time.hours),
             "source": labour_time.source.value,
