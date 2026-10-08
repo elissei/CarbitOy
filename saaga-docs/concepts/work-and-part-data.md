@@ -1,7 +1,6 @@
 ---
 title: Work and Part Data
 type: concept
-last_verified: 2026-10-06
 sources:
   - domain/models/enums.py
   - domain/models/vehicle.py
@@ -31,7 +30,9 @@ sources:
 
 ## Business Definition
 
-A work item describes a vehicle operation and its needed parts. The shared models carry a customer's interpreted request through catalog products, supplier prices, labour, a proposal, a person's selection, and a final quote. They also define the input and output contracts for a quote's work description.
+A work item describes a vehicle operation and its needed parts. The shared
+models carry a customer's interpreted request through catalog products,
+supplier prices, labour, a proposal, a person's selection, and a final quote. They also define the input and output contracts for a quote's work description.
 
 ## Configuration
 
@@ -52,7 +53,9 @@ A work item describes a vehicle operation and its needed parts. The shared model
 
 ## Data Storage
 
-These Pydantic models are in-memory contracts. The source does not define persisted storage for them.
+These Pydantic models define shared data contracts. They do not themselves
+persist data; the [Local Work Queue](../features/local-work-queue.md) owns
+its separate SQLite storage and manual-entry workflow.
 
 | Object/Model/Type | Field/Property | Purpose |
 |--------|-------|---------|
@@ -84,11 +87,12 @@ These Pydantic models are in-memory contracts. The source does not define persis
 | `SupplierOffer` | `currency` | Currency of the offer price. |
 | `SupplierOffer` | `availability` | Supplier's stock state for the offer. |
 | `Availability` | `IN_STOCK`, `BACKORDER`, `OUT_OF_STOCK`, `UNKNOWN` | Offer and selection availability vocabulary. |
-| `LabourTimeSource` | `AUTODATA` | Declared source vocabulary for a time estimate. |
+| `LabourTimeSource` | `AUTODATA`, `MANUAL_AUTODATA` | Distinguishes an Autodata time from one manually checked and recorded by a person. |
 | `SupplierCandidate` | `product_id`, `supplier`, `supplier_product_id` | Identifies a proposed supplier choice. |
 | `SupplierCandidate` | `commercial_quantity_needed`, `unit_price`, `total_price`, `currency`, `availability` | Holds the proposed buying quantity, prices, currency, and stock state. |
-| `LabourTime` | `hours`, `source` | Positive time estimate; `LabourTimeSource` currently declares `AUTODATA`. |
-| `LabourCost` | `hours`, `hourly_rate`, `total_price`, `currency` | Positive hours, rate, and total; the total must equal hours times rate. |
+| `LabourTime` | `hours`, `source` | Positive time estimate and its provenance category. |
+| `LabourTime` | `work_description`, `autodata_reference`, `recorded_by` | Optional provenance text; manual Autodata time requires a nonblank description and recorder. |
+| `LabourCost` | `hours`, `hourly_rate`, `total_price`, `currency` | Positive hours, rate, and total; the total must equal hours times rate rounded half up to cents. |
 | `RawProposal` | `proposal_id`, `created_at` | Identifies and dates the proposal. |
 | `RawProposal` | `vehicle`, `work_item` | Connects vehicle and requested work. |
 | `RawProposal` | `labour_time` | Supplies the time estimate. |
@@ -120,7 +124,29 @@ These Pydantic models are in-memory contracts. The source does not define persis
 
 `CustomerRequestInterpretation` rejects extra fields. `READY` requires an operation and at least one part type, and `diagnosis_required=True` requires `HUMAN_REQUIRED`. Its model does not check part-type membership; the [intake conversion rule](../features/customer-intake.md) currently supports only `brake_pad`.
 
-`RawProposal` rejects extra fields and requires `labour_time.hours` to match `labour_cost.hours`. `LabourTime` and `LabourCost` require positive numeric fields as noted above. `PartSalePrice` requires positive purchase and sale prices. `FinalQuote` verifies matching proposal identity, purchase price, currency agreement, and that its total equals labour cost plus part sale price. [Quote creation](../features/final-quote.md) calculates the prices before constructing that model; the model does not itself apply the sale-price multiplier.
+`LabourTime` requires positive hours. For `MANUAL_AUTODATA`, both
+`work_description` and `recorded_by` must contain non-whitespace text;
+`autodata_reference` may be absent. `AUTODATA` remains valid with only
+hours and source. The model checks whether required text is nonblank
+but does not trim or normalize the stored strings. It accepts optional
+provenance fields for either source, including `AUTODATA`.
+
+`LabourCost` requires positive hours, hourly rate, and total. It calculates
+the expected total as `hours * hourly_rate`, quantized to `0.01` with
+`ROUND_HALF_UP`, then requires `total_price` to equal that result. The
+comparison is numeric: a Decimal value of `90.0` can equal an expected
+`90.00`. The model does not calculate a total or VAT for the caller. The
+[proposal decision flow](../features/proposal-decisions.md) and
+[local work queue](../features/local-work-queue.md) have separate pricing
+entry points.
+
+`RawProposal` rejects extra fields and requires `labour_time.hours` to
+match `labour_cost.hours`. `PartSalePrice` requires positive purchase and
+sale prices. `FinalQuote` verifies matching proposal identity, purchase
+price, currency agreement, and that its total equals labour cost plus
+part sale price. [Quote creation](../features/final-quote.md) calculates
+the prices before constructing that model; the model does not itself
+apply the sale-price multiplier.
 
 `QuotePresentationInput` and `QuotePresentationOutput` reject extra fields. Neither model validates the business content of `work_description`; the output contract accepts an empty string. The remaining quantity and price fields shown here have no explicit positivity constraints in their model declarations. The model declarations also do not require a `canonical_product_type` string to occur in the ontology.
 
@@ -139,6 +165,8 @@ These Pydantic models are in-memory contracts. The source does not define persis
 
 - `domain/ontology/parser.py` - demonstrates vocabulary lookup and construction of a default requirement.
 - `domain/models/raw_proposal.py` - demonstrates nested proposal data and model-level validation.
+- `domain/models/labour_time.py` - defines time provenance and the manual-entry validation contract.
+- `domain/models/labour_cost.py` - validates the cent-rounded labour total.
 - `domain/models/customer_request.py` - demonstrates interpretation status and model-level readiness checks.
 - `domain/models/final_quote.py` - demonstrates identity, purchase-price, currency, and total checks.
 - `domain/models/quote_presentation.py` - demonstrates the presentation input contract.
@@ -147,5 +175,6 @@ These Pydantic models are in-memory contracts. The source does not define persis
 
 - [Architecture](../ARCHITECTURE.md) places these contracts within the library.
 - [Proposal Decisions](../features/proposal-decisions.md) owns the decision and selection sequence that uses them.
+- [Local Work Queue](../features/local-work-queue.md) owns manual-entry steps and persisted labour snapshots.
 - [Customer Intake](../features/customer-intake.md) owns the message interpretation and work-item conversion flow.
 - [Final Quote and Presentation](../features/final-quote.md) owns price calculation and presentation sequence.

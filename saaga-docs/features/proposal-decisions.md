@@ -1,6 +1,7 @@
 ---
 title: "Feature: Proposal Decisions"
 type: feature
+last_verified: 2026-10-09
 sources:
   - domain/rules/availability.py
   - domain/rules/axle_matching.py
@@ -48,7 +49,7 @@ Before working with this feature, understand these concepts:
 ### Mechanism
 
 1. Obtain a requirement, products, and offers; [Supplier Adapters](../patterns/supplier-adapters.md) owns offer acquisition. Call `build_supplier_candidates()` and, when price ordering is needed, `sort_by_total_price()`.
-2. Obtain `LabourTime`, call `calculate_labour_cost()`, and construct `RawProposal` with the work, labour, and candidates. `create_demo_proposal()` composes this for exactly one part requirement.
+2. Obtain `LabourTime`, call `domain.rules.labour_cost.calculate_labour_cost()`, and construct `RawProposal` with the work, labour, and candidates. `create_demo_proposal()` composes this for exactly one part requirement.
 3. Call `format_raw_proposal()` for Finnish decision text, then `select_candidate_from_proposal()` with a candidate from that proposal and the selector's identity and time.
 
 After selection, [Final Quote and Presentation](./final-quote.md) owns quote assembly; `create_demo_final_quote()` is the in-repository composition example.
@@ -58,10 +59,14 @@ After selection, [Final Quote and Presentation](./final-quote.md) owns quote ass
 - Candidate building pairs offers with products by `product_id`, keeps only `IN_STOCK` or `BACKORDER`, and validates a matched, available offer's nonblank identifiers and currency and positive unit price.
 - Coverage requires equal canonical type and unit values; when the ontology requires axle matching, an unknown required axle fails while an unknown or `BOTH` product axle matches a known one. Coverage calculation rejects nonpositive quantities, rounds needed packages up, and multiplies the count by offer unit price.
 - Selection requires candidate membership and nonblank `proposal_id` and `selected_by`.
-- `RawProposal` requires its labour time and cost hours to agree; labour cost uses a fixed `90.00` EUR hourly rate.
+- `RawProposal` requires its labour time and cost hours to agree. The library labour rule multiplies hours by its fixed `90.00` EUR hourly rate without rounding before it constructs `LabourCost`. The shared [labour cost contract](../concepts/work-and-part-data.md) requires the product rounded half up to cents; an input whose raw product has fractional cents can therefore fail `LabourCost` validation.
 - `create_demo_proposal()` requires exactly one part requirement. It passes the resulting candidates into `RawProposal` without sorting them.
 
 The renderer uses the proposal's existing candidate order, so callers that want price order must sort before constructing the proposal.
+
+For example, `1.3355` hours multiplied by `90.00` yields `120.195` EUR,
+while `LabourCost` expects `120.20` EUR, so construction fails. The separate
+[Local Work Queue](./local-work-queue.md) owns web rounding and VAT behavior.
 
 ### Edge Cases
 
@@ -89,7 +94,7 @@ The renderer uses the proposal's existing candidate order, so callers that want 
 | `domain.rules.package_coverage` | `calculate_product_coverage()` | Checks product, unit, axle, and package coverage. |
 | `domain.rules.unit_conversion` | `convert_to_pcs()` | Converts PCS or PAIR; the candidate flow does not call it. |
 | `domain.rules.candidate_sorting` | `sort_by_total_price()` | Orders candidates by total price. |
-| `domain.rules.labour_cost` | `calculate_labour_cost()` | Applies the fixed EUR hourly rate of 90.00. |
+| `domain.rules.labour_cost` | `calculate_labour_cost()` | Multiplies by the fixed EUR hourly rate of 90.00 and constructs `LabourCost` without rounding first. |
 | `presentation.raw_proposal_text` | `format_raw_proposal()` | Renders Finnish labels and two-decimal comma prices. |
 | `domain.rules.human_selection` | `select_candidate_from_proposal()` | Copies a member candidate into a human selection. |
 | `app.demo_workflow` | `create_demo_proposal()` | Composes candidate and labour rules for one requirement. |
@@ -98,8 +103,14 @@ The renderer uses the proposal's existing candidate order, so callers that want 
 
 - **Depends on**: [Work and Part Data](../concepts/work-and-part-data.md) for contracts and ontology; [Supplier Adapters](../patterns/supplier-adapters.md) for offers.
 - **Used by**: Callers assembling proposals and requesting a human decision; [Final Quote and Presentation](./final-quote.md) uses the resulting selection.
-- **External systems**: None in these rules; labour time is supplied by the caller.
+- **External systems**: None in these rules; labour time is supplied by the caller. The separate [Local Work Queue](./local-work-queue.md) owns manual entry and web pricing.
 
 ## Extension Guide
 
-Extend offer acquisition through [Supplier Adapters](../patterns/supplier-adapters.md). For work with more than one requirement, compose candidate building per requirement instead of calling the single-requirement demo helper. Once a person chooses a candidate, use [Final Quote and Presentation](./final-quote.md) for quote creation and output.
+Extend offer acquisition through [Supplier Adapters](../patterns/supplier-adapters.md).
+For work with more than one requirement, compose candidate building per
+requirement instead of calling the single-requirement demo helper. Account
+for the shared model's cent-rounded total requirement if accepting labour
+durations that produce fractional cents; the current library rule can reject
+them. Once a person chooses a candidate, use [Final Quote and Presentation](./final-quote.md)
+for quote creation and output.

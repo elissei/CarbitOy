@@ -17,6 +17,17 @@ Kirjaa sovitut ratkaisut, niiden perusteet ja avoimet oletukset. Erota vahvistet
 
 ## Päätökset
 
+### P-003 – web-version dokumentoinnin lähde ja rajaus
+
+- **Päivämäärä:** 2026-10-09
+- **Tila:** vahvistettu
+- **Päätös ja vahvistaja:** Elissein tehtäväkohtaisen ohjeen mukaan web-sovellus dokumentoidaan olemassa olevassa `carbitoy-docs`-worktreessä `visuals`-haaralla. Lähde on `feature/web-app`, tavoitecommit `5be66f9f8978ae29e16f0eb2754a5220c8a4fcc9`; tämä on poikkeus dokumentointiohjeen `main`-lähdehaaraan, ei yleinen haarakäytännön muutos.
+- **Perustelu:** Yksi varsinainen dokumentointirakenne säilyttää teknisen kuvauksen, päiväkirjan ja päätösten taustan yhdessä. Tavallinen merge tuo dokumentoitavan koodin Saagan nähtäväksi häiritsemättä muiden worktreeiden kehitystä.
+- **Harkitut vaihtoehdot:** Uuden dokumentointirakenteen luominen web-worktreehen ja dokumenttien kopiointi haarojen välillä jätettiin pois. `main` ei sisällä tässä tehtävässä dokumentoitavaa web-toteutusta.
+- **Vaikutukset:** Git- ja Saaga-komennot ajetaan WSL:ssä. Saaga ylläpitää teknistä dokumentaatiota, tekijä päiväkirjaa ja päätöslokia; generoituun navigaatioon ei tehdä käsimuutoksia. Kuvataan SQLite, atominen kirjoitus, yhtenäinen lukutransaktio, 409-versio- ja sisältöristiriidat, pysyvä luontipyynnön idempotenssi, uusien tapahtumien `work_version`, vanhat tiedot säilyttävä migraatio, selaimen kilpailusuojaus ja odotettavien laskentavirheiden 422-vastaukset. Dokumentointimuutokset commitoidaan vain paikallisesti; ei pushia eikä julkaisua.
+- **Avoimet kysymykset:** Nykyinen web-versio on paikalliskäyttöinen eikä siinä ole kirjautumista. Autodata-työaika syötetään manuaalisesti. Pysyvä pilvitietokanta, verkkokäytön suojaus ja Vercel-julkaisu ovat ratkaisematta; tämä päätös ei hyväksy tai toteuta niitä. Työkustannus ei ole hyväksytty lopullinen tarjous.
+- **Lähteet / toteutuksen commit:** Korjaus `5be66f9f8978ae29e16f0eb2754a5220c8a4fcc9`, lähdemerge `541ffec5ffa6e25dff0143ab40f2a0876e1c038d` ja [kehityspäiväkirja](kehityspaivakirja.md). Korjauscommitin tarkistus: 151 läpäissyttä testiä, mukana kuusi Chromium-selaintestiä ja vanhan tietokantaskeeman yhteensopivuustesti.
+
 ### P-001 – dokumentointijärjestelmä
 
 - **Päivämäärä:** 2026-10-05
