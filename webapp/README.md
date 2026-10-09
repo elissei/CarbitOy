@@ -33,6 +33,42 @@ Pythonin `LabourTime` käyttää `MANUAL_AUTODATA`-lähdettä. Nykyinen
 erittelee ALV:n. Tuntihinta 90 €/h sisältää ALV:n 25,5 %.
 Laskelma ei ole hyväksytty lopullinen tarjous.
 
+## Web 4D: työaikojen tarkistuksen esikatselu
+
+Käynnistä yllä oleva paikallinen palvelin ja avaa
+http://127.0.0.1:8000/static/labour-review-demo.html.
+Näkymä on erillinen **DEMO / ESIKATSELU**, jossa kaikki työajat,
+Autodata-operaatioiden viitteet, henkilöt ja päätökset ovat keksittyjä.
+Nykyinen työjono ja sen API-reitit toimivat ennallaan.
+
+Sivu näyttää erilliset työrivit, muuttumattomat alkuperäiset ajat ja summan,
+monityösuunnitelman tarkistusvaatimuksen sekä esimerkkipäätösten historian.
+Esimerkkitilanteista voi valita myös puuttuvan hyväksynnän, puuttuvan ajan,
+muuttuneen sääntöversion tai yhden työn suunnitelman. Puuttuvaa aikaa ei
+korvata arviolla. Aiemmat ja vanhentuneet päätökset erotetaan nykyisestä.
+
+Hyväksyntävaihtoehdon valinta ja perusteltu ajanmuutos (myös 0,00 h)
+muuttavat vain esikatselua. Selain laskee hintavaikutuksen desimaalitekstistä
+kokonaislukuaritmetiikalla: 90 €/h sisältää ALV:n 25,5 %, kokonaishinta
+pyöristetään senteiksi, veroton hinta pyöristetään ja ALV saadaan erotuksena.
+Tämä ei ole auktoritatiivinen hinnoittelurajapinta. Varaosat eivät kuulu
+työveloituksen esikatseluun.
+
+Sivu ei tee API-pyyntöjä, lue oikeaa päätöshistoriaa, kirjoita tietokantaan
+tai selaimen tallennustilaan eikä muodosta tarjousta. Näytä esikatselu
+-painike ei tallenna hyväksyntää. Sivun uudelleenlataus palauttaa esimerkin.
+Keksityt historiassa näkyvät hyväksyjät eivät ole kirjautuneita käyttäjiä.
+
+Oikeaan dataan kytkentä odottaa käyttäjätunnistusta ja valtuutettuja sisäisiä
+luku- ja kirjoitusrajapintoja. Hyväksyjä tulee palvelimen luotetusta
+kontekstista. Hyväksyntä käsitellään `LabourPlanService`-palvelussa, ja
+lopullinen hinta lasketaan `ApprovedLabourPricingService`-palvelussa
+`require_approved_final_hours()`-tarkistuksen jälkeen. Palvelimen on
+tarkistettava versio, aktiivinen revisio, sisältötunniste ja sääntöversio;
+selaimen tilamerkintä tai laskema hinta ei todista hyväksyntää.
+Hintasnapshotin myöhempi tarjouskäyttö edellyttää uutta voimassaolon
+tarkistusta ja atomista version tarkistusta tallennuksen yhteydessä.
+
 ## Tallennus ja rajat
 
 SQLite-tietokanta syntyy polkuun `var/carbit.db`. `CARBIT_DATABASE` voi

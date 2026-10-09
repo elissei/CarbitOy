@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="fi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Työaikojen tarkistus · Carbit DEMO</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/labour-review-demo.css">
+    <script src="/static/labour-review-demo.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Palaa Carbit-työjonoon">
+        <span class="brand-mark">C</span>
+        <span>Carbit <small>Työaikojen tarkistus</small></span>
+      </a>
+      <span class="demo-badge">DEMO / ESIKATSELU</span>
+    </header>
+    <main class="review-shell">
+      <div class="review-heading">
+        <div><p class="overline">Sisäisen näkymän valmistelu</p><h1>Työaikojen tarkistus</h1></div>
+        <label for="demo-scenario">Esimerkkitilanne
+          <select id="demo-scenario">
+            <option value="reviewed">Useita töitä ja päätöshistoria</option>
+            <option value="pending">Useita töitä, hyväksyntä puuttuu</option>
+            <option value="incomplete">Puuttuva alkuperäinen aika</option>
+            <option value="rules-changed">Muuttunut sääntöversio</option>
+            <option value="single">Yksi korjaustyö</option>
+          </select>
+        </label>
+      </div>
+      <aside class="demo-notice" id="demo-notice">
+        <strong>DEMO: kaikki työ- ja henkilötiedot ovat keksittyjä.</strong>
+        <p>Valinnat ovat vain esikatselua. Hyväksyntää ei tallenneta eikä oikeaa päätöshistoriaa lueta.
+          Sivun lataaminen uudelleen palauttaa esimerkin alkutilaan.</p>
+      </aside>
+      <noscript><p class="demo-notice">Esikatselu tarvitsee JavaScriptin. Hyväksyntää ei voi tallentaa tältä sivulta.</p></noscript>
+
+      <section class="review-card" aria-labelledby="originals-title">
+        <div class="review-section-heading">
+          <div><p class="overline" id="plan-identity"></p><h2 id="originals-title">Alkuperäiset työajat</h2></div>
+          <span class="rate">90 €/h sis. ALV 25,5 %</span>
+        </div>
+        <p class="review-description">Jokaisella työllä on oma Autodata-kirjaus. Alkuperäiset ajat säilyvät
+          erillään lopullisesta laskutettavasta ajasta, eikä niitä voi muokata tässä näkymässä.</p>
+        <div class="table-scroll" role="region" aria-label="Korjaustöiden alkuperäiset ajat" tabindex="0">
+          <table class="review-table">
+            <caption class="visually-hidden">Keksityn suunnitelman yksilöidyt korjaustyöt</caption>
+            <thead><tr><th scope="col">Korjaustyö</th><th scope="col">Autodata-operaation tunniste</th><th scope="col">Alkuperäinen aika</th></tr></thead>
+            <tbody id="original-work-rows"></tbody>
+          </table>
+        </div>
+        <div class="original-summary"><span>Alkuperäisten työaikojen summa</span><strong id="original-hours-total"></strong></div>
+        <p id="review-requirement" class="review-requirement"></p>
+        <p id="coverage-notice" class="form-error hidden" role="status"></p>
+      </section>
+
+      <div class="review-columns">
+        <section class="review-card" aria-labelledby="preview-title">
+          <p class="overline">Ei tallennusta</p><h2 id="preview-title">Hyväksynnän esikatselu</h2>
+          <p class="review-description">Kokeile hyväksyntää sellaisenaan tai perusteltua muutosta.
+            Järjestelmä ei vähennä työaikaa automaattisesti.</p>
+          <form id="review-preview-form" novalidate>
+            <fieldset id="preview-controls">
+              <legend>Työaikapäätöksen vaihtoehto</legend>
+              <label class="review-option"><input type="radio" name="decision" value="unchanged" checked><span>Hyväksyntä sellaisenaan<br><small>Alkuperäisten aikojen muuttumaton summa</small></span></label>
+              <label class="review-option"><input type="radio" name="decision" value="adjusted"><span>Perusteltu ajanmuutos<br><small>Lopullinen aika voi olla myös 0,00 h</small></span></label>
+              <div id="adjustment-fields" class="adjustment-fields hidden">
+                <label for="preview-final-hours">Lopullinen laskutettava aika (h, esikatselu)
+                  <input id="preview-final-hours" name="final_hours" type="text" inputmode="decimal" maxlength="64" aria-describedby="hours-help" disabled>
+                </label>
+                <p class="notice" id="hours-help">Anna vähintään 0 tuntia. Voit käyttää pilkkua tai pistettä.</p>
+                <label for="preview-reason">Muutoksen perustelu (pakollinen)
+                  <textarea id="preview-reason" name="reason" rows="3" maxlength="2000" disabled></textarea>
+                </label>
+              </div>
+              <p id="preview-error" class="form-error hidden" role="alert"></p>
+              <button class="primary" type="submit">Näytä esikatselu</button>
+            </fieldset>
+          </form>
+          <div id="preview-result" class="preview-result hidden" role="status" aria-live="polite">
+            <strong id="preview-choice"></strong>
+            <dl class="review-totals">
+              <div><dt>Lopullinen aika, esikatselu</dt><dd id="preview-hours"></dd></div>
+              <div><dt>Työveloitus sis. ALV</dt><dd id="preview-gross"></dd></div>
+              <div><dt>Veroton työveloitus</dt><dd id="preview-net"></dd></div>
+              <div><dt>ALV 25,5 %</dt><dd id="preview-vat"></dd></div>
+            </dl>
+            <p id="preview-reason-summary" class="notice"></p>
+          </div>
+          <p class="preview-boundary" id="preview-boundary">Esikatselu ei ole tallennettu hyväksyntä eikä
+            auktoritatiivinen lopullinen hinta. Nollaveloitus koskee vain työtä; varaosahinnat säilyvät erillisinä.
+            Lopullinen hinnoittelu edellyttää palvelimen tarkistamaa voimassa olevaa ihmisen hyväksyntää.</p>
+        </section>
+
+        <section class="review-card" aria-labelledby="current-title">
+          <p class="overline">Keksityn datan tila</p><h2 id="current-title">Nykyinen hyväksyntä</h2>
+          <p id="current-review-status" class="current-review-status"></p>
+          <dl id="current-review-details" class="review-totals hidden">
+            <div><dt>Alkuperäinen summa</dt><dd id="current-original-hours"></dd></div>
+            <div><dt>Lopullinen aika</dt><dd id="current-final-hours"></dd></div>
+            <div><dt>Hyväksyjä</dt><dd id="current-reviewer"></dd></div>
+          </dl>
+          <p class="review-description">Esikatselussa tehty valinta ei muuta tätä esimerkkipäätöstä tai päätöshistoriaa.</p>
+          <div class="authentication-note"><h3>Odottaa käyttäjätunnistusta</h3><p>Oikeiden suunnitelmien ja historian
+            lukeminen sekä päätösten tallentaminen liitetään myöhemmin valtuutetun korjaamon työntekijän
+            tunnistukseen. Hyväksyjä määräytyy palvelimen luotetusta käyttäjäkontekstista.</p></div>
+        </section>
+      </div>
+
+      <section class="review-card" aria-labelledby="decisions-title">
+        <p class="overline">Vain keksittyjä esimerkkipäätöksiä</p><h2 id="decisions-title">Päätöshistoria</h2>
+        <p class="review-description">Aiemmat päätökset säilyvät. Sisällön tai sääntöversion muutos tekee
+          vanhasta hyväksynnästä vanhentuneen.</p>
+        <ol id="demo-decision-history" class="decision-history"></ol>
+        <p id="empty-decision-history" class="notice hidden">Tässä esimerkissä ei ole aiempia päätöksiä.</p>
+      </section>
+      <footer class="review-footer"><a href="/">Palaa nykyiseen työjonoon</a><span>DEMO / ESIKATSELU · Ei tallennusta</span></footer>
+    </main>
+  </body>
+</html>
