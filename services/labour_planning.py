@@ -1,0 +1,57 @@
+from domain.models.labour_plan import LabourPlan, LabourTimeEntry
+from domain.models.work_plan import WorkPlan
+
+
+def build_labour_plan(
+    work_plan: WorkPlan,
+    original_times: list[LabourTimeEntry],
+    selected_time_ids: list[str] | None = None,
+) -> LabourPlan:
+    """Select unique full-work times, then assess coverage without pricing.
+
+    Explicit references choose combined times or resolve alternative original
+    times. Uncovered works get a single matching full-scope time automatically.
+    Multiple matching times require review; none is guessed. Combined times
+    across distinct operations are never chosen implicitly. No workshop pair
+    practice changes work scope:
+    a pair can be one explicit BOTH work, or opposite-side works matching a
+    confirmed workshop pair practice. Their separate times are not summed.
+    Unconfirmed split-side groups require an explicit full-group time choice.
+    """
+    plan = LabourPlan(
+        work_plan=work_plan.model_copy(deep=True),
+        original_times=[entry.model_copy(deep=True) for entry in original_times],
+        selected_time_ids=list(selected_time_ids or []),
+    )
+    entries = {entry.time_id: entry for entry in plan.original_times}
+    explicitly_covered = {
+        work_id
+        for time_id in plan.selected_time_ids
+        if time_id in entries
+        for work_id in entries[time_id].covered_work_ids
+    }
+    pair_work_ids = set()
+    confirmed_pairs = plan.work_plan.confirmed_split_pairs
+    for group in plan.work_plan.split_side_groups:
+        pair_work_ids.update(group)
+        if explicitly_covered.intersection(group):
+            continue
+        if group not in confirmed_pairs:
+            continue
+        candidates = [
+            entry for entry in plan.original_times
+            if set(entry.covered_work_ids) == set(group)
+        ]
+        if len(candidates) == 1:
+            plan.selected_time_ids.append(candidates[0].time_id)
+    for work in plan.work_plan.work_items:
+        if work.work_id in explicitly_covered or work.work_id in pair_work_ids:
+            continue
+        candidates = [
+            entry for entry in plan.original_times
+            if entry.covered_work_ids == [work.work_id]
+            and entry.covers_full_work(work)
+        ]
+        if len(candidates) == 1:
+            plan.selected_time_ids.append(candidates[0].time_id)
+    return plan
