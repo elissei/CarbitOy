@@ -21,4 +21,5 @@ venv/
 *.sqlite3-shm
 var/
 logs/
+codex-logs/
 *.log

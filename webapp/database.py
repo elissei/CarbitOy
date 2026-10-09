@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
+from webapp.labour_migrations import apply_labour_migrations
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS work_inquiries (
@@ -88,13 +89,20 @@ class WorkRepository:
                     connection.execute(
                         "ALTER TABLE work_events ADD COLUMN work_version INTEGER"
                     )
+                apply_labour_migrations(connection)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
         try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            # REPLACE deletes conflicting rows: run their immutability triggers.
+            connection.execute("PRAGMA recursive_triggers = ON")
+            for setting in ("foreign_keys", "recursive_triggers"):
+                enabled = connection.execute(f"PRAGMA {setting}").fetchone()
+                if enabled is None or enabled[0] != 1:
+                    raise RuntimeError(f"SQLite requires {setting}=ON")
             yield connection
         finally:
             connection.close()
