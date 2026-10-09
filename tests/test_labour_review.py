@@ -13,7 +13,7 @@ from domain.models.vehicle import Vehicle
 from domain.models.work_item import Operation, WorkItem
 from domain.models.work_plan import PlannedWork, WorkPlan
 from services.labour_planning import (
-    approve_labour_plan_unchanged, build_labour_plan,
+    approve_labour_plan_adjusted, approve_labour_plan_unchanged, build_labour_plan,
 )
 from services.proposal_builder import build_raw_proposal
 
@@ -163,11 +163,11 @@ def test_incomplete_plan_cannot_be_approved_even_with_current_id():
         approve(plan)
 
 
-def test_adjusted_status_is_reserved_and_not_an_approval():
+def test_adjusted_status_without_explicit_time_and_reason_is_not_an_approval():
     approved = approve(make_plan())
     payload = approved.review_decision.model_dump()
     payload["status"] = LabourReviewStatus.APPROVED_ADJUSTED
-    with pytest.raises(ValidationError, match="phase 3A"):
+    with pytest.raises(ValidationError, match="final_hours"):
         LabourReviewDecision.model_validate(payload)
     # Even a caller bypassing Pydantic validation cannot gain final readiness.
     approved.review_decision = approved.review_decision.model_copy(update={
@@ -207,3 +207,202 @@ def test_single_work_price_remains_144_euros():
     )
     assert proposal.labour_cost.total_price == Decimal("144.00")
     assert plan.require_total_hours() == Decimal("1.60")
+
+
+def adjust(plan, hours=Decimal("2.75"), reason="Explicit fictional human decision"):
+    return approve_labour_plan_adjusted(
+        plan, plan.content_id, "test-user-id", hours, reason,
+    )
+
+
+@pytest.mark.parametrize("multi", [False, True])
+def test_unchanged_final_hours_equal_original_sum(multi):
+    pending = make_plan(multi=multi)
+    assert pending.is_billable  # Coverage keeps its existing meaning.
+    assert pending.approved_final_hours is None
+    with pytest.raises(ValueError, match="no current approved"):
+        pending.require_approved_final_hours()
+    plan = approve(pending)
+    assert plan.require_approved_final_hours() == pending.require_total_hours()
+    assert plan.review_decision.original_total_hours == pending.total_hours
+    assert plan.review_decision.final_hours is None
+    assert plan.review_decision.rules_version == plan.review_rules_version
+
+
+@pytest.mark.parametrize("hours", [Decimal("2.75"), Decimal("4.00"), Decimal("0.00")])
+def test_explicit_adjusted_hours_are_separate_from_unchanged_originals(hours):
+    source = make_plan(multi=True)
+    source_dump = source.model_dump(round_trip=True)
+    plan = adjust(source, hours)
+    assert source.model_dump(round_trip=True) == source_dump
+    assert plan.original_times == source.original_times
+    assert plan.total_hours == Decimal("3.20")
+    assert plan.review_decision.original_total_hours == Decimal("3.20")
+    assert plan.review_status == LabourReviewStatus.APPROVED_ADJUSTED
+    assert plan.require_approved_final_hours() == hours
+    assert plan.is_ready_for_final_approval
+    plan.require_final_approval_ready()
+    assert plan.review_decision.reason == "Explicit fictional human decision"
+    assert plan.review_decision.reviewed_at.utcoffset() is not None
+    restored = LabourPlan.model_validate_json(plan.model_dump_json(round_trip=True))
+    assert restored.require_approved_final_hours() == hours
+
+
+@pytest.mark.parametrize("hours", [Decimal("2.75"), Decimal("0.00")])
+@pytest.mark.parametrize("reason", [None, "", " ", "\t\n"])
+def test_adjusted_hours_require_a_nonblank_reason(reason, hours):
+    plan = approve(make_plan(multi=True))
+    before = plan.model_dump(round_trip=True)
+    with pytest.raises(ValidationError, match="reason"):
+        adjust(plan, hours=hours, reason=reason)
+    assert plan.model_dump(round_trip=True) == before
+
+
+@pytest.mark.parametrize("hours", [None, Decimal("-0.01"), "not-hours", "",
+                                  Decimal("NaN"), Decimal("Infinity"),
+                                  Decimal("-Infinity"), True, False])
+def test_invalid_adjusted_hours_are_rejected_without_mutating_decisions(hours):
+    plan = approve(make_plan(multi=True))
+    before = plan.model_dump(round_trip=True)
+    with pytest.raises(ValidationError):
+        adjust(plan, hours=hours)
+    assert plan.model_dump(round_trip=True) == before
+
+
+def test_adjusted_call_cannot_omit_time_or_reason():
+    plan = make_plan(multi=True)
+    with pytest.raises(TypeError):
+        approve_labour_plan_adjusted(plan, plan.content_id, "test-user-id")
+
+
+@pytest.mark.parametrize("hours", [Decimal("2.75"), Decimal("0.00")])
+@pytest.mark.parametrize("change", ["time", "scope", "rules_version"])
+def test_stale_adjusted_approval_never_returns_final_hours(change, monkeypatch, hours):
+    plan = adjust(make_plan(multi=True), hours=hours)
+    decision = plan.review_decision
+    if change == "time":
+        plan.original_times[0].labour_time.hours = Decimal("2.00")
+    elif change == "scope":
+        plan.work_plan.work_items[0].work_item.side = Side.BOTH
+    else:
+        monkeypatch.setattr("domain.models.labour_plan.LABOUR_REVIEW_RULES_VERSION", "next-rule")
+    assert plan.review_status == LabourReviewStatus.PENDING
+    assert plan.approved_final_hours is None
+    with pytest.raises(ValueError):
+        plan.require_approved_final_hours()
+    assert plan.review_decision == decision
+
+
+def test_zero_billing_decision_preserves_real_labour_and_decision_history():
+    source = approve(make_plan(multi=True))
+    before = source.model_dump(round_trip=True)
+    plan = adjust(source, hours=Decimal("0.00"), reason="Fictional no-charge work decision")
+    assert source.model_dump(round_trip=True) == before
+    assert plan.original_times == source.original_times
+    assert plan.total_hours == Decimal("3.20")
+    assert plan.review_decision.original_total_hours == Decimal("3.20")
+    assert plan.review_decision.plan_content_id == source.content_id
+    assert plan.review_decision.rules_version == plan.review_rules_version
+    assert plan.review_decision.reviewed_at.utcoffset() is not None
+    assert plan.review_history == (source.review_decision,)
+    assert plan.review_status == LabourReviewStatus.APPROVED_ADJUSTED
+    assert plan.is_ready_for_final_approval
+    for restored in (plan, LabourPlan.model_validate_json(plan.model_dump_json(round_trip=True))):
+        hours = restored.approved_final_hours
+        assert hours is not None
+        assert isinstance(hours, Decimal)
+        assert str(hours) == "0.00"
+        assert restored.require_approved_final_hours() == Decimal("0.00")
+    renewed = approve(plan)
+    assert renewed.review_history == (source.review_decision, plan.review_decision)
+    assert renewed.require_approved_final_hours() == Decimal("3.20")
+
+
+def test_successive_decisions_preserve_full_history_and_only_latest_applies():
+    original = make_plan(multi=True)
+    first = approve(original)
+    second = adjust(first)
+    third = approve(second)
+    assert original.review_decision is None
+    assert first.review_history == ()
+    assert second.review_history == (first.review_decision,)
+    assert third.review_history == (first.review_decision, second.review_decision)
+    assert third.require_approved_final_hours() == Decimal("3.20")
+    assert second.require_approved_final_hours() == Decimal("2.75")
+    assert third.content_id == original.content_id
+    restored = LabourPlan.model_validate_json(third.model_dump_json(round_trip=True))
+    assert restored.review_history == third.review_history
+    assert restored.review_decision == third.review_decision
+    with pytest.raises(ValidationError):
+        restored.review_history[0].reviewer_id = "replacement"
+
+
+def test_stale_previous_decision_is_archived_when_new_source_is_approved():
+    plan = adjust(make_plan(multi=True))
+    old = plan.review_decision
+    plan.original_times[0].labour_time.hours = Decimal("2.00")
+    new = approve(plan)
+    assert new.review_history == (old,)
+    assert old.original_total_hours == Decimal("3.20")
+    assert old.final_hours == Decimal("2.75")
+    assert new.require_approved_final_hours() == Decimal("3.60")
+    assert new.review_decision.plan_content_id != old.plan_content_id
+
+
+def test_history_does_not_fall_back_to_an_older_matching_decision():
+    first = approve(make_plan(multi=True))
+    changed = first.model_copy(deep=True)
+    changed.original_times[0].labour_time.hours = Decimal("2.00")
+    latest = adjust(changed)
+    latest.original_times[0].labour_time.hours = Decimal("1.60")
+    assert latest.content_id == first.content_id
+    assert latest.review_history == (first.review_decision,)
+    assert latest.approved_final_hours is None
+
+
+def test_adjusted_approval_cannot_approve_stale_or_incomplete_plan():
+    plan = make_plan(multi=True)
+    old_id = plan.content_id
+    plan.original_times[0].labour_time.hours = Decimal("2.00")
+    with pytest.raises(ValueError, match="changed"):
+        approve_labour_plan_adjusted(plan, old_id, "test-user-id", Decimal("2"), "Test reason")
+    plan.selected_time_ids.clear()
+    with pytest.raises(ValueError, match="review"):
+        adjust(plan)
+
+
+def test_forged_invalid_adjustment_cannot_return_approved_hours():
+    plan = adjust(make_plan(multi=True))
+    plan.review_decision = plan.review_decision.model_copy(update={"reason": " "})
+    assert plan.review_status == LabourReviewStatus.PENDING
+    assert plan.approved_final_hours is None
+
+
+def test_final_time_interface_returns_decimal_even_for_unvalidated_copy():
+    plan = adjust(make_plan(multi=True))
+    plan.review_decision = plan.review_decision.model_copy(update={"final_hours": "2.75"})
+    with pytest.warns(UserWarning, match="serializer warnings"):
+        hours = plan.require_approved_final_hours()
+    assert hours == Decimal("2.75")
+    assert isinstance(hours, Decimal)
+
+
+def test_decision_cannot_claim_a_different_original_sum():
+    plan = adjust(make_plan(multi=True))
+    plan.review_decision = plan.review_decision.model_copy(update={
+        "original_total_hours": Decimal("99"),
+    })
+    assert plan.approved_final_hours is None
+
+
+def test_legacy_3a_decision_can_be_retained_without_granting_current_approval():
+    plan = approve(make_plan(multi=True))
+    payload = plan.model_dump(round_trip=True)
+    for field in ("rules_version", "original_total_hours", "final_hours", "reason"):
+        payload["review_decision"].pop(field)
+    restored = LabourPlan.model_validate(payload)
+    assert restored.review_decision.rules_version == "3A-v2"
+    assert restored.approved_final_hours is None
+    renewed = approve(restored)
+    assert renewed.review_history == (restored.review_decision,)
+    assert renewed.require_approved_final_hours() == Decimal("3.20")

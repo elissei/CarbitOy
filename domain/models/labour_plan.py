@@ -12,6 +12,7 @@ from pydantic import (
     computed_field,
     field_validator,
     model_validator,
+    ValidationError,
 )
 
 from domain.models.enums import Side
@@ -19,7 +20,7 @@ from domain.models.labour_time import LabourTime
 from domain.models.work_plan import PlannedWork, WorkPlan
 
 
-LABOUR_REVIEW_RULES_VERSION = "3A-v2"
+LABOUR_REVIEW_RULES_VERSION = "3B-v1"
 
 
 class LabourTimeEntry(BaseModel):
@@ -120,11 +121,35 @@ class LabourReviewDecision(BaseModel):
     status: LabourReviewStatus
     reviewer_id: str = Field(min_length=1)
     reviewed_at: datetime
+    # Legacy 3A records omitted these fields; their hash/rules version makes
+    # them stale under 3B, but they remain readable as historical decisions.
+    rules_version: str = "3A-v2"
+    original_total_hours: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
+    final_hours: Decimal | None = Field(default=None, ge=0, allow_inf_nan=False)
+    reason: str | None = None
+
+    @field_validator("original_total_hours", "final_hours", mode="before")
+    @classmethod
+    def reject_boolean_hours(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("hours must be a decimal number, not a boolean")
+        return value
 
     @model_validator(mode="after")
-    def validate_unchanged_decision(self) -> "LabourReviewDecision":
-        if self.status != LabourReviewStatus.APPROVED_UNCHANGED:
-            raise ValueError("Only APPROVED_UNCHANGED is available in phase 3A")
+    def validate_decision(self) -> "LabourReviewDecision":
+        if self.status == LabourReviewStatus.PENDING:
+            raise ValueError("PENDING is not an approval decision")
+        if self.status == LabourReviewStatus.APPROVED_ADJUSTED:
+            if self.final_hours is None:
+                raise ValueError("adjusted approval requires explicit final_hours")
+            if self.original_total_hours is None:
+                raise ValueError("adjusted approval requires original_total_hours")
+            if self.reason is None or not self.reason.strip():
+                raise ValueError("adjusted approval requires a nonblank reason")
+        elif self.final_hours is not None:
+            raise ValueError("unchanged approval cannot specify adjusted final_hours")
+        if not self.rules_version.strip():
+            raise ValueError("rules_version must not be blank")
         if not self.reviewer_id.strip():
             raise ValueError("reviewer_id must not be blank")
         if self.reviewed_at.utcoffset() is None:
@@ -136,7 +161,9 @@ class LabourPlan(BaseModel):
     """Original records and selected references, with derived billing readiness.
 
     Unselected original alternatives may overlap. Selected coverage must be
-    complete and disjoint. No price, VAT or human adjustment is calculated.
+    complete and disjoint. Human decisions store a separate final time; they
+    never change the original records or their calculated total. No price or
+    VAT is calculated here.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -145,6 +172,14 @@ class LabourPlan(BaseModel):
     original_times: list[LabourTimeEntry] = Field(default_factory=list)
     selected_time_ids: list[str] = Field(default_factory=list)
     review_decision: LabourReviewDecision | None = None
+    # Previous decisions only, in append order; review_decision is the latest.
+    # Tuple plus frozen decision records avoids in-place history edits.
+    review_history: tuple[LabourReviewDecision, ...] = ()
+
+    @computed_field
+    @property
+    def review_rules_version(self) -> str:
+        return LABOUR_REVIEW_RULES_VERSION
 
     @computed_field
     @property
@@ -193,17 +228,51 @@ class LabourPlan(BaseModel):
     @property
     def review_status(self) -> LabourReviewStatus:
         decision = self.review_decision
-        if (self.is_billable and decision is not None
-                and decision.status == LabourReviewStatus.APPROVED_UNCHANGED
-                and decision.plan_content_id == self.content_id):
-            return LabourReviewStatus.APPROVED_UNCHANGED
+        if decision is None or not self.is_billable:
+            return LabourReviewStatus.PENDING
+        # Models allow copy/update without validation. Never treat malformed
+        # decisions as approved, including records restored by caller code.
+        try:
+            decision = LabourReviewDecision.model_validate(decision.model_dump())
+        except ValidationError:
+            return LabourReviewStatus.PENDING
+        if (decision.plan_content_id == self.content_id
+                and decision.rules_version == self.review_rules_version
+                and decision.original_total_hours == self.total_hours):
+            return decision.status
         return LabourReviewStatus.PENDING
 
     @computed_field
     @property
     def is_ready_for_final_approval(self) -> bool:
         """Coverage READY alone is insufficient for final approval or sending."""
-        return self.is_billable and self.review_status == LabourReviewStatus.APPROVED_UNCHANGED
+        return self.is_billable and self.review_status in (
+            LabourReviewStatus.APPROVED_UNCHANGED,
+            LabourReviewStatus.APPROVED_ADJUSTED,
+        )
+
+    @computed_field
+    @property
+    def approved_final_hours(self) -> Decimal | None:
+        """Current human-approved billing time, never a pending/stale fallback."""
+        review_status = self.review_status
+        if review_status == LabourReviewStatus.APPROVED_UNCHANGED:
+            return self.total_hours
+        if review_status == LabourReviewStatus.APPROVED_ADJUSTED:
+            decision = LabourReviewDecision.model_validate(self.review_decision.model_dump())
+            return decision.final_hours
+        return None
+
+    def require_approved_final_hours(self) -> Decimal:
+        """The future quote/send service must use this validated boundary.
+
+        is_billable and require_total_hours only check original-time coverage;
+        neither grants approval or permission to send a customer quote.
+        """
+        hours = self.approved_final_hours
+        if hours is None:
+            raise ValueError("LabourPlan has no current approved final hours")
+        return hours
 
     def require_final_approval_ready(self) -> None:
         if not self.is_ready_for_final_approval:
@@ -315,6 +384,11 @@ class LabourPlan(BaseModel):
     @computed_field
     @property
     def is_billable(self) -> bool:
+        """Original coverage readiness only, NOT current human approval.
+
+        Quote/send services must check require_approved_final_hours() as well
+        as authenticated permissions and persist the decision atomically.
+        """
         return self.status == LabourPlanStatus.READY
 
     @computed_field

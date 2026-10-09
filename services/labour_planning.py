@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from domain.models.labour_plan import (
     LabourPlan, LabourReviewDecision, LabourReviewStatus, LabourTimeEntry,
@@ -72,14 +73,55 @@ def approve_labour_plan_unchanged(
     enforce permissions, and atomically persist this decision with its event.
     Source inputs and a previous decision are not mutated by this function.
     """
+    return _approve_labour_plan(
+        plan, expected_content_id, reviewer_id,
+        LabourReviewStatus.APPROVED_UNCHANGED,
+    )
+
+
+def approve_labour_plan_adjusted(
+    plan: LabourPlan,
+    expected_content_id: str,
+    reviewer_id: str,
+    final_hours: Decimal,
+    reason: str,
+) -> LabourPlan:
+    """Record an explicit human final time and reason; suggest no adjustment.
+
+    Zero is a valid nonnegative decision here, separate from the existing
+    positive-hour LabourTime/pricing models. Pricing a zero-time decision
+    needs an explicit future service policy; this function does not price it.
+    Authentication, permissions and atomic storage belong to the caller.
+    """
+    return _approve_labour_plan(
+        plan, expected_content_id, reviewer_id,
+        LabourReviewStatus.APPROVED_ADJUSTED, final_hours, reason,
+    )
+
+
+def _approve_labour_plan(
+    plan: LabourPlan,
+    expected_content_id: str,
+    reviewer_id: str,
+    status: LabourReviewStatus,
+    final_hours: Decimal | None = None,
+    reason: str | None = None,
+) -> LabourPlan:
     reviewed = LabourPlan.model_validate(plan.model_dump(round_trip=True))
     if reviewed.content_id != expected_content_id:
         raise ValueError("LabourPlan content changed since review")
-    reviewed.require_total_hours()
-    reviewed.review_decision = LabourReviewDecision(
+    original_total = reviewed.require_total_hours()
+    decision = LabourReviewDecision(
         plan_content_id=reviewed.content_id,
-        status=LabourReviewStatus.APPROVED_UNCHANGED,
+        rules_version=reviewed.review_rules_version,
+        status=status,
         reviewer_id=reviewer_id,
         reviewed_at=datetime.now(timezone.utc),
+        original_total_hours=original_total,
+        final_hours=final_hours,
+        reason=reason,
     )
+    if reviewed.review_decision is not None:
+        reviewed.review_history += (reviewed.review_decision,)
+    reviewed.review_decision = decision
     return reviewed
