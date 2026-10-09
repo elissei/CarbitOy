@@ -1,8 +1,8 @@
-"""Persistence contracts for Web 4A, not approval actions or domain decisions.
+"""Persistence contracts for Web 4A, populated by the internal Web 4B service.
 
-Identifiers and content hashes come from the future trusted application layer.
-Operation identifiers are strings so storage does not depend on the older
-operation enum in this worktree. Decimal values serialize as exact JSON strings.
+Identifiers and content hashes come from the trusted application layer.
+Operation identifiers remain strings for persistence compatibility.
+Decimal values serialize as exact JSON strings.
 """
 
 import json
@@ -147,7 +147,7 @@ class LabourPlanRevisionRecord(StorageRecord):
 
 
 class LabourReviewDecisionRecord(StorageRecord):
-    """Stored outcome, constructed only after a future domain approval call.
+    """Stored outcome, constructed only after a domain approval call.
 
     final_billable_hours is an explicit storage snapshot also for unchanged
     approval. Domain APPROVED_UNCHANGED still uses final_hours=None; its stored
@@ -184,7 +184,7 @@ class ActiveLabourPlanRecord(StorageRecord):
 
 
 class LabourPlanRequestRecord(StorageRecord):
-    """Future idempotent result, separate from inquiry creation retries."""
+    """Idempotent service result, separate from inquiry creation retries."""
 
     inquiry_id: str = Field(min_length=1)
     actor_id: str = Field(min_length=1)
