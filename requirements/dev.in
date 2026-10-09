@@ -1,0 +1,5 @@
+# Full test suite, including mocked OpenAI adapters and local Chromium tests.
+-r ai.in
+httpx>=0.27,<1
+playwright>=1.55,<2
+pytest>=8,<10

@@ -20,6 +20,12 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-web.txt
 ```
 
+`requirements-web.txt` käyttää nyt Windows AMD64 / CPython 3.13 -kehityksen
+hash-lukitusta. Tuotannon ajonaikaiset riippuvuudet, valinnaiset AI-adapterit
+ja testityökalut on erotettu. Ubuntu 24.04 / Python 3.12 tarvitsee oman,
+vielä varmentamattoman lukituksen. Katso [Python-ympäristön menettely](../docs/python-environment.md)
+puhtaasta testauksesta, Ubuntu-varmennuksesta ja turvallisista päivityksistä.
+
 ## Käyttö
 
 Luo tiedustelu rekisterinumerolla, asiakkaan alkuperäisellä kuvauksella ja

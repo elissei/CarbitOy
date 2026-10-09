@@ -1,0 +1,3 @@
+# Optional existing OpenAI adapters; not imported by webapp.main.
+-r runtime.in
+openai>=2,<3
