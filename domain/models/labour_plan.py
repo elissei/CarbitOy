@@ -1,6 +1,9 @@
 from collections import Counter
+from datetime import datetime
 from decimal import Decimal
 from enum import Enum
+from hashlib import sha256
+import json
 
 from pydantic import (
     BaseModel,
@@ -14,6 +17,9 @@ from pydantic import (
 from domain.models.enums import Side
 from domain.models.labour_time import LabourTime
 from domain.models.work_plan import PlannedWork, WorkPlan
+
+
+LABOUR_REVIEW_RULES_VERSION = "3A-v2"
 
 
 class LabourTimeEntry(BaseModel):
@@ -85,6 +91,47 @@ class LabourPlanIssue(BaseModel):
     time_ids: list[str] = Field(default_factory=list)
 
 
+class LabourReviewFlagCode(str, Enum):
+    MULTI_WORK_REVIEW_REQUIRED = "MULTI_WORK_REVIEW_REQUIRED"
+    POSSIBLE_LABOUR_OVERLAP = "POSSIBLE_LABOUR_OVERLAP"
+
+
+class LabourReviewStatus(str, Enum):
+    PENDING = "PENDING"
+    APPROVED_UNCHANGED = "APPROVED_UNCHANGED"
+    APPROVED_ADJUSTED = "APPROVED_ADJUSTED"
+
+
+class LabourReviewFlag(BaseModel):
+    code: LabourReviewFlagCode
+    work_ids: list[str]
+
+
+class LabourReviewDecision(BaseModel):
+    """Explicit decision supplied by a trusted application service.
+
+    Authentication, permissions and persistent audit history belong to that
+    service. This domain record does not authenticate the reviewer itself.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    plan_content_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: LabourReviewStatus
+    reviewer_id: str = Field(min_length=1)
+    reviewed_at: datetime
+
+    @model_validator(mode="after")
+    def validate_unchanged_decision(self) -> "LabourReviewDecision":
+        if self.status != LabourReviewStatus.APPROVED_UNCHANGED:
+            raise ValueError("Only APPROVED_UNCHANGED is available in phase 3A")
+        if not self.reviewer_id.strip():
+            raise ValueError("reviewer_id must not be blank")
+        if self.reviewed_at.utcoffset() is None:
+            raise ValueError("reviewed_at must include a timezone")
+        return self
+
+
 class LabourPlan(BaseModel):
     """Original records and selected references, with derived billing readiness.
 
@@ -97,6 +144,70 @@ class LabourPlan(BaseModel):
     work_plan: WorkPlan
     original_times: list[LabourTimeEntry] = Field(default_factory=list)
     selected_time_ids: list[str] = Field(default_factory=list)
+    review_decision: LabourReviewDecision | None = None
+
+    @computed_field
+    @property
+    def review_flags(self) -> list[LabourReviewFlag]:
+        flags = []
+        work_ids = sorted(work.work_id for work in self.work_plan.work_items)
+        if len(work_ids) > 1:
+            flags.append(LabourReviewFlag(
+                code=LabourReviewFlagCode.MULTI_WORK_REVIEW_REQUIRED,
+                work_ids=work_ids,
+            ))
+        # POSSIBLE_LABOUR_OVERLAP is reserved. No confirmed source or rule
+        # currently exists; operation, axle and side must not imply overlap.
+        return flags
+
+    @computed_field
+    @property
+    def content_id(self) -> str:
+        """Hash the full source snapshot and selection, excluding the decision.
+
+        List ordering and equivalent Decimal representations are immaterial.
+        All original alternatives are included, so changing even an unselected
+        Autodata record invalidates the decision. Never cache this value.
+        """
+        works = self.work_plan.model_dump(mode="json", round_trip=True)
+        works["work_items"].sort(key=lambda work: work["work_id"])
+        times = []
+        for entry in sorted(self.original_times, key=lambda item: item.time_id):
+            value = entry.model_dump(mode="json", round_trip=True)
+            value["covered_work_ids"].sort()
+            hours = entry.labour_time.hours
+            # Avoid Decimal.normalize(), which can round under the context.
+            decimal_text = format(hours, "f")
+            if "." in decimal_text:
+                decimal_text = decimal_text.rstrip("0").rstrip(".")
+            value["labour_time"]["hours"] = decimal_text
+            times.append(value)
+        payload = {"review_rules_version": LABOUR_REVIEW_RULES_VERSION, "work_plan": works,
+                   "original_times": times,
+                   "selected_time_ids": sorted(self.selected_time_ids)}
+        canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                               separators=(",", ":"))
+        return sha256(canonical.encode("utf-8")).hexdigest()
+
+    @computed_field
+    @property
+    def review_status(self) -> LabourReviewStatus:
+        decision = self.review_decision
+        if (self.is_billable and decision is not None
+                and decision.status == LabourReviewStatus.APPROVED_UNCHANGED
+                and decision.plan_content_id == self.content_id):
+            return LabourReviewStatus.APPROVED_UNCHANGED
+        return LabourReviewStatus.PENDING
+
+    @computed_field
+    @property
+    def is_ready_for_final_approval(self) -> bool:
+        """Coverage READY alone is insufficient for final approval or sending."""
+        return self.is_billable and self.review_status == LabourReviewStatus.APPROVED_UNCHANGED
+
+    def require_final_approval_ready(self) -> None:
+        if not self.is_ready_for_final_approval:
+            raise ValueError("LabourPlan requires explicit current human review before final approval")
 
     @field_validator("selected_time_ids")
     @classmethod

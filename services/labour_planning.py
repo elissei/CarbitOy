@@ -1,4 +1,8 @@
-from domain.models.labour_plan import LabourPlan, LabourTimeEntry
+from datetime import datetime, timezone
+
+from domain.models.labour_plan import (
+    LabourPlan, LabourReviewDecision, LabourReviewStatus, LabourTimeEntry,
+)
 from domain.models.work_plan import WorkPlan
 
 
@@ -55,3 +59,27 @@ def build_labour_plan(
         if len(candidates) == 1:
             plan.selected_time_ids.append(candidates[0].time_id)
     return plan
+
+
+def approve_labour_plan_unchanged(
+    plan: LabourPlan,
+    expected_content_id: str,
+    reviewer_id: str,
+) -> LabourPlan:
+    """Explicitly accept the unchanged original total on an exact snapshot.
+
+    The future application service must supply an authenticated human reviewer,
+    enforce permissions, and atomically persist this decision with its event.
+    Source inputs and a previous decision are not mutated by this function.
+    """
+    reviewed = LabourPlan.model_validate(plan.model_dump(round_trip=True))
+    if reviewed.content_id != expected_content_id:
+        raise ValueError("LabourPlan content changed since review")
+    reviewed.require_total_hours()
+    reviewed.review_decision = LabourReviewDecision(
+        plan_content_id=reviewed.content_id,
+        status=LabourReviewStatus.APPROVED_UNCHANGED,
+        reviewer_id=reviewer_id,
+        reviewed_at=datetime.now(timezone.utc),
+    )
+    return reviewed
