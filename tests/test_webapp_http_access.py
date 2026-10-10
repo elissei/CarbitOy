@@ -1,5 +1,6 @@
 """Fail-closed HTTP access: real MFA sessions, explicit HTTPS configuration."""
 
+import json
 import sqlite3
 from dataclasses import replace
 from uuid import uuid4
@@ -200,7 +201,7 @@ def test_route_added_after_startup_is_denied(http):
 
 
 def test_missing_environment_fails_before_database_creation(tmp_path, monkeypatch):
-    for name in ("CARBIT_AUTH_DATABASE", "CARBIT_ALLOWED_HOSTS", "CARBIT_EXTERNAL_ORIGINS", "CARBIT_TOTP_KEYS"):
+    for name in ("CARBIT_AUTH_DATABASE", "CARBIT_ALLOWED_HOSTS", "CARBIT_EXTERNAL_ORIGINS", "CARBIT_TOTP_KEYS", "CARBIT_CSRF_ACTIVE_KEY_ID", "CARBIT_CSRF_KEYS"):
         monkeypatch.delenv(name, raising=False)
     with pytest.raises(AuthConfigurationError, match="missing"):
         with TestClient(create_app(tmp_path / "missing" / "works.db")):
@@ -228,6 +229,10 @@ def test_environment_and_secret_masking(tmp_path, monkeypatch):
     monkeypatch.setenv("CARBIT_EXTERNAL_ORIGINS", "https://testserver")
     key = settings.totp_keys[0].get_secret_value()
     monkeypatch.setenv("CARBIT_TOTP_KEYS", key)
+    monkeypatch.setenv("CARBIT_CSRF_ACTIVE_KEY_ID", settings.csrf_active_key_id)
+    monkeypatch.setenv("CARBIT_CSRF_KEYS", json.dumps([
+        {"id": item.key_id, "key": item.secret.get_secret_value()} for item in settings.csrf_keys
+    ]))
     assert AuthSettings.from_environment() == settings
     assert key not in repr(settings)
 

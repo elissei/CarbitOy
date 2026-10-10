@@ -1,6 +1,8 @@
 """Explicit HTTPS test configuration and real password + TOTP session fixtures."""
 
+import base64
 import ipaddress
+import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -16,7 +18,7 @@ from pydantic import SecretStr
 
 from webapp.auth_models import SessionCookiePolicy, UserRole
 from webapp.auth_service import TrustedClientContext
-from webapp.auth_settings import AuthSettings
+from webapp.auth_settings import AuthSettings, CsrfSigningKey
 from webapp.main import create_app
 
 
@@ -30,6 +32,10 @@ def settings_for(database_path, origin="https://testserver"):
         database_path=Path(database_path).resolve(),
         allowed_hosts=(urlsplit(origin).hostname,), external_origins=(origin,),
         totp_keys=(SecretStr(Fernet.generate_key().decode("ascii")),),
+        csrf_active_key_id="test-active",
+        csrf_keys=(CsrfSigningKey(
+            "test-active", SecretStr(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii")),
+        ),),
     )
 
 

@@ -8,7 +8,7 @@ the approved login transport. This is intentional, not a development bypass.
 
 ## Configuration and startup
 
-All four environment variables are required; missing or invalid values stop
+All six environment variables are required; missing or invalid values stop
 startup before the business database is initialized:
 
 | Variable | Required value |
@@ -17,6 +17,8 @@ startup before the business database is initialized:
 | `CARBIT_ALLOWED_HOSTS` | Comma-separated exact lowercase DNS names or IP addresses, without wildcards, ports or whitespace. |
 | `CARBIT_EXTERNAL_ORIGINS` | Comma-separated exact HTTPS origins, including non-default ports, without paths/trailing slashes; omit the default port 443. Every origin's hostname must be allowed. |
 | `CARBIT_TOTP_KEYS` | Comma-separated Fernet encryption keys supplied by the operator's protected secret configuration. First key encrypts; the complete list permits decryption during a deliberate rotation. No generated or repository-stored production key. |
+| `CARBIT_CSRF_ACTIVE_KEY_ID` | Explicit identifier of the current independently provisioned CSRF signing key. |
+| `CARBIT_CSRF_KEYS` | JSON array of `{"id": "identifier", "key": "operator-provisioned-key"}` entries: one active key and at most two previous verification keys. No secret defaults. See [Checkpoint 2B-1](http-authentication-checkpoint-2b-1.md) for encoding and rotation. |
 
 The authentication directory is deliberately not created by the application.
 Use a separate auth database from the business database, with OS access limited
@@ -94,6 +96,8 @@ setting weakens HTTPS, MFA or cookie flags for Windows development.
   CSRF token transport and rejection of unsafe requests without proof. Exact
   Origin checking when present and SameSite are defense in depth; an absent
   Origin is currently accepted and this is **not complete CSRF protection**.
+  Checkpoint 2B-1 now provides isolated cryptographic and cookie helpers under
+  unit tests; none are connected to HTTP handlers or the access gate yet.
 - **Checkpoint 3:** server-derived audit attribution and the approval-context
   bridge. `actor` and `recorded_by` remain untrusted legacy descriptive fields.
   They have no authorization effect, but authenticated writers can still forge
