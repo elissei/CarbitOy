@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from http_auth_support import TEST_PASSWORD, create_test_app, grant_session, settings_for
+from http_auth_support import TEST_PASSWORD, business_headers, create_test_app, grant_session, settings_for
 from webapp.auth_crypto import token_digest
 from webapp.auth_models import SessionCookiePolicy, UserRole
 from webapp.auth_service import AuthenticationError, TrustedClientContext
@@ -104,11 +104,11 @@ def test_role_permission_matrix_and_legacy_pricing(http, role):
         assert http.put(f"/api/works/{work['id']}/labour", json={}).status_code == 403
         assert http.app.state.repository.get_work(work["id"]) == before
     else:
-        response = http.post("/api/works", json=payload)
+        response = http.post("/api/works", headers=business_headers(http), json=payload)
         assert response.status_code == 201
         work = response.json()
         assert http.get(f"/api/works/{work['id']}").status_code == 200
-        response = http.put(f"/api/works/{work['id']}/labour", json={
+        response = http.put(f"/api/works/{work['id']}/labour", headers=business_headers(http), json={
             "version": 1, "hours": "1.60", "work_description": "Fictional Autodata operation", "recorded_by": "Legacy label",
         })
         assert response.status_code == 200

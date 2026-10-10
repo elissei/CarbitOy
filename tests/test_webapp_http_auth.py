@@ -133,7 +133,7 @@ def test_complete_http_lifecycle_and_role_isolation(http, role):
     assert token not in response.text
     assert http.get("/api/works").status_code == 200
     payload = {"registration": "TEST-ONLY", "customer_description": "Fictional work", "actor": "Untrusted legacy text", "idempotency_key": str(uuid4())}
-    assert http.post("/api/works", json=payload).status_code == (403 if role == UserRole.IT_ADMIN else 201)
+    assert http.post("/api/works", headers=headers(bootstrap(http)), json=payload).status_code == (403 if role == UserRole.IT_ADMIN else 201)
     proof = bootstrap(http)
     response = http.post("/api/auth/logout", headers=headers(proof), json={})
     assert response.status_code == 204 and not response.content

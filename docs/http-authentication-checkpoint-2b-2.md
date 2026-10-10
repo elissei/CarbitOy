@@ -1,5 +1,9 @@
 # Web 4E-3A CP2B-2: authentication HTTP lifecycle
 
+Historical checkpoint snapshot. [CP3B](http-authentication-checkpoint-3b.md) now
+extends session-purpose CSRF verification to the existing business writes and
+adds browser proof transport. Business identity attribution remains deferred.
+
 The CP2A baseline was approved in the project planning conversation and restated
 by the project owner for this implementation. It authorizes the five operations
 below, using the committed authentication foundation and CP2B-1 primitives.

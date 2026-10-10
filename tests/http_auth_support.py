@@ -72,6 +72,28 @@ class AuthenticatedTestClient(TestClient):
         self.cookies.set(SessionCookiePolicy().name, self.grant.token.get_secret_value())
         return self
 
+    def request(self, method, url, **kwargs):
+        # Legacy business regressions supply real cookie-bound proofs. Security
+        # tests use raw TestClient instances so rejection paths stay observable.
+        path = str(url)
+        if (method.upper() == "POST" and path == "/api/works") or (
+            method.upper() == "PUT" and path.startswith("/api/works/") and path.endswith("/labour")
+        ):
+            kwargs["headers"] = {**business_headers(self), **(kwargs.get("headers") or {})}
+        return super().request(method, url, **kwargs)
+
+
+def business_headers(http):
+    """Fixture proof over a genuine validated session; no HTTP budget override."""
+    token = http.cookies.get(SessionCookiePolicy().name)
+    session = http.app.state.auth_service.inspect_session(token)
+    origin = str(http.base_url).rstrip("/")
+    proof = http.app.state.csrf_protector.issue_proof(
+        "session", origin, session_token=token,
+        session_absolute_expiry=session.absolute_expiry, session_idle_expiry=session.idle_expiry,
+    )
+    return {"Origin": origin, "X-CSRF-Token": proof}
+
 
 def local_tls_files(tmp_path):
     """Ephemeral self-signed loopback certificate, never a production credential."""

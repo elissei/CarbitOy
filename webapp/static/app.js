@@ -50,12 +50,57 @@ function formatApiError(detail) {
   }).join("\n");
 }
 
+let sessionCsrf = null;
+let csrfRefresh = null;
+let csrfGeneration = 0;
+
+function forgetSessionCsrf() {
+  sessionCsrf = null;
+  csrfGeneration += 1;
+}
+
+async function sessionProof() {
+  if (sessionCsrf && performance.now() < sessionCsrf.until
+      && Date.now() < sessionCsrf.expires) return sessionCsrf.token;
+  if (!csrfRefresh) {
+    const generation = csrfGeneration;
+    csrfRefresh = (async () => {
+      const response = await fetch("/api/auth/csrf", {
+        credentials: "same-origin", cache: "no-store",
+        headers: { "X-Carbit-Auth": "bootstrap" }
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(formatApiError(body.detail));
+      const fields = typeof body.csrf_token === "string" ? body.csrf_token.split(".") : [];
+      const issued = Number(fields[3]);
+      const expires = Number(fields[4]);
+      const remaining = Math.min(expires * 1000 - Date.now(), (expires - issued) * 1000) - 5000;
+      if (generation !== csrfGeneration || body.state !== "session" || fields.length !== 7
+          || fields[0] !== "v1" || fields[2] !== "session" || body.csrf_token.length > 512
+          || !Number.isSafeInteger(issued) || !Number.isSafeInteger(expires)
+          || expires !== body.expires_at || expires - issued > 600 || remaining <= 0) {
+        throw new Error("Kirjautuminen on vanhentunut. Kirjaudu uudelleen.");
+      }
+      sessionCsrf = { token: body.csrf_token, expires: expires * 1000 - 5000,
+        until: performance.now() + remaining };
+      return sessionCsrf.token;
+    })().finally(() => { csrfRefresh = null; });
+  }
+  return csrfRefresh;
+}
+
 async function api(path, options = {}) {
+  const method = (options.method || "GET").toUpperCase();
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    headers["X-CSRF-Token"] = await sessionProof();
+  }
   const response = await fetch(path, {
     ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) }
+    credentials: "same-origin", headers
   });
   if (!response.ok) {
+    if (response.status === 401 || response.status === 403) forgetSessionCsrf();
     const body = await response.json().catch(() => ({}));
     throw new Error(formatApiError(body.detail));
   }

@@ -1,5 +1,7 @@
 """Explicit route inventory, auth HTTP boundary and server-owned business gate."""
 
+import logging
+import re
 import sqlite3
 from types import MappingProxyType
 
@@ -62,7 +64,7 @@ def _error(code: int, detail: str) -> JSONResponse:
 
 class HttpAccessGate(BaseHTTPMiddleware):
     @staticmethod
-    def _transport(request, settings, *, auth=False):
+    def _transport(request, settings, *, auth=False, write=False):
         # Only ASGI's scheme and an exact configured external authority are used.
         # Forwarded headers are never interpreted here; proxy trust is server setup.
         hosts = request.headers.getlist("host")
@@ -72,15 +74,21 @@ class HttpAccessGate(BaseHTTPMiddleware):
         origins = request.headers.getlist("origin")
         if origins and (len(origins) != 1 or origins[0] not in settings.external_origins):
             raise HttpAuthError(403, "Origin not allowed")
-        if auth:
-            if (request.method == "POST" and len(origins) != 1) or (origins and origins[0] != target):
+        if auth or write:
+            if ((write or request.method == "POST") and len(origins) != 1) or (origins and origins[0] != target):
                 raise HttpAuthError(403, "Origin not allowed")
             for name in ("x-csrf-token", "x-carbit-auth", "content-type", "content-length", "authorization"):
                 if len(request.headers.getlist(name)) > 1:
                     raise HttpAuthError(400, "Ambiguous authentication headers")
             if request.headers.getlist("authorization") or request.headers.getlist("transfer-encoding"):
                 raise HttpAuthError(400, "Unsupported authentication headers")
-            if request.url.path == "/api/auth/csrf" and request.headers.getlist("x-carbit-auth") != ["bootstrap"]:
+            if write:
+                lengths = request.headers.getlist("content-length")
+                if lengths and not re.fullmatch(r"[0-9]{1,10}", lengths[0]):
+                    raise HttpAuthError(400, "Invalid business request framing")
+                if any("," in value for value in request.headers.getlist("content-type")):
+                    raise HttpAuthError(400, "Ambiguous business request content type")
+            if auth and request.url.path == "/api/auth/csrf" and request.headers.getlist("x-carbit-auth") != ["bootstrap"]:
                 # Navigation/image/form requests cannot set this custom header.
                 # Cross-origin fetch needs a preflight, which we never grant.
                 raise HttpAuthError(403, "Authentication bootstrap header required")
@@ -144,7 +152,11 @@ class HttpAccessGate(BaseHTTPMiddleware):
         if not token:
             return _error(401, "Authentication required")
         try:
-            user = await run_in_threadpool(service.require_session, token)
+            if permission == "write":
+                session = await run_in_threadpool(service.inspect_session, token)
+                user = session.user
+            else:
+                user = await run_in_threadpool(service.require_session, token)
         except AuthenticationError:
             return _error(401, "Authentication required")
         except sqlite3.DatabaseError:
@@ -154,8 +166,49 @@ class HttpAccessGate(BaseHTTPMiddleware):
         roles = READ_ROLES if permission == "read" else WRITE_ROLES
         if user.role not in roles:
             return _error(403, "Permission denied")
+        if permission == "write":
+            try:
+                self._transport(request, settings, write=True)
+                if set(request.state.security_cookies) != {SESSION_COOKIE}:
+                    raise HttpAuthError(409, "Authentication state conflict")
+                protector = getattr(state, "csrf_protector", None)
+                if protector is None:
+                    return _error(503, "Authentication unavailable")
+                proofs = request.headers.getlist("x-csrf-token")
+                if len(proofs) != 1 or not 1 <= len(proofs[0]) <= 512:
+                    raise CsrfValidationError("Invalid CSRF security context")
+                await run_in_threadpool(
+                    protector.verify_proof, proofs[0], "session", request.state.target_origin,
+                    session_token=token, session_absolute_expiry=session.absolute_expiry,
+                    session_idle_expiry=session.idle_expiry,
+                )
+                # Both pre-dispatch checks are read-only: body validation and
+                # business conflicts must also succeed before any idle refresh.
+                session = await run_in_threadpool(service.inspect_session, token)
+                user = session.user
+                if user.role not in WRITE_ROLES:
+                    return _error(403, "Permission denied")
+            except HttpAuthError as error:
+                return _error(error.status, error.detail)
+            except CsrfValidationError:
+                return _error(403, "Invalid CSRF security context")
+            except AuthenticationError:
+                return _error(401, "Authentication required")
+            except (sqlite3.DatabaseError, ValueError, TypeError, KeyError):
+                return _error(503, "Authentication unavailable")
         # Server-owned identity; not yet a labour-approval context or event actor.
         request.state.authenticated_user = user
         response = await call_next(request)
+        if permission == "write" and 200 <= response.status_code < 300:
+            try:
+                # Never touch based on the pre-dispatch role snapshot. The
+                # current role and full session validity are checked atomically
+                # with the update in the auth database, after handler success.
+                await run_in_threadpool(service.refresh_session_for_roles, token, allowed_roles=WRITE_ROLES)
+            except (sqlite3.DatabaseError, ValueError, TypeError, KeyError):
+                # The business transaction already committed. Preserve its
+                # response; do not turn an idle-refresh failure into a rejected
+                # write or encourage an ambiguous retry. No fallback touch.
+                logging.getLogger(__name__).warning("Accepted business write could not refresh session idle time")
         response.headers["Cache-Control"] = "no-store"
         return response

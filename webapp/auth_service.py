@@ -365,8 +365,8 @@ class AuthService:
 
     def inspect_session(self, token: str, *, touch: bool = False) -> ValidatedSession:
         """Validate before optionally refreshing idle time; never extend absolute time."""
-        now = self._now()
         with self.repository.transaction() as connection:
+            now = self._now()
             session, user = self._session(connection, token, now)
             last_seen = session["last_seen_at"]
             if touch:
@@ -374,6 +374,24 @@ class AuthService:
                 connection.execute("UPDATE auth_sessions SET last_seen_at=? WHERE session_id=?", (now, session["session_id"]))
             return ValidatedSession(_user(user), _utc(session["expires_at"]),
                                     _utc(min(session["expires_at"], last_seen + self.policy.idle_seconds)))
+
+    def refresh_session_for_roles(self, token: str, *, allowed_roles: frozenset[UserRole]) -> bool:
+        """After an accepted operation, atomically revalidate identity/role and refresh.
+
+        This does not authorize the operation itself. BEGIN IMMEDIATE serializes
+        the checks and update with role changes and revocation; sample time only
+        after acquiring the lock so a queued refresh cannot revive an expiry.
+        """
+        with self.repository.transaction() as connection:
+            now = self._now()
+            try:
+                session, user = self._session(connection, token, now)
+            except AuthenticationError:
+                return False
+            if UserRole(user["role"]) not in allowed_roles:
+                return False
+            connection.execute("UPDATE auth_sessions SET last_seen_at=? WHERE session_id=?", (now, session["session_id"]))
+            return True
 
     def revoke_session(self, token: str) -> None:
         now = self._now()

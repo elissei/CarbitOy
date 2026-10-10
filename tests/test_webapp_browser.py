@@ -14,9 +14,10 @@ from webapp.auth_models import SessionCookiePolicy
 
 
 class LocalApp(tuple):
-    def __new__(cls, url, repository, token):
+    def __new__(cls, url, repository, token, auth_service):
         result = super().__new__(cls, (url, repository))
         result.token = token
+        result.auth_service = auth_service
         return result
 
 
@@ -48,7 +49,7 @@ def local_app(tmp_path):
                 raise RuntimeError("Local test server did not start")
             threading.Event().wait(0.01)
         grant = grant_session(app.state.auth_service)
-        yield LocalApp(url, app.state.repository, grant.token.get_secret_value())
+        yield LocalApp(url, app.state.repository, grant.token.get_secret_value(), app.state.auth_service)
     finally:
         server.should_exit = True
         thread.join(timeout=10)
@@ -255,3 +256,161 @@ def test_currency_formatting_keeps_string_precision(page, local_app):
     page.goto(local_app[0], wait_until="networkidle")
     formatted = page.evaluate("formatMoney('9007199254740993.01')")
     assert formatted.replace("\u00a0", " ") == "9 007 199 254 740 993,01 €"
+
+
+def test_csrf_is_lazy_and_cached_across_form_writes(page, local_app):
+    bootstraps = []
+    page.on("request", lambda request: bootstraps.append(request) if request.url.endswith("/api/auth/csrf") else None)
+    page.goto(local_app[0], wait_until="networkidle")
+    assert bootstraps == []
+    fill_inquiry(page)
+    page.locator('#new-work-form button[type="submit"]').click()
+    expect(page.locator("#detail-registration")).to_have_text("TEST-NEW")
+    fill_labour(page)
+    page.locator('#labour-form button[type="submit"]').click()
+    expect(page.locator("#price-summary")).to_contain_text("144,00")
+    assert len(bootstraps) == 1
+    assert bootstraps[0].headers["x-carbit-auth"] == "bootstrap"
+    assert page.evaluate("localStorage.length === 0 && sessionStorage.length === 0")
+
+
+def test_concurrent_writes_share_one_pending_bootstrap(page, local_app):
+    held = []
+    page.route("**/api/auth/csrf", lambda route: held.append(route))
+    page.goto(local_app[0], wait_until="networkidle")
+    payloads = [dict(registration="TEST-" + suffix, customer_description="Fictional concurrent write",
+                     actor="Legacy", idempotency_key=str(uuid4())) for suffix in ("A", "B")]
+    page.evaluate("""payloads => {
+      window.concurrentResults = null;
+      Promise.all(payloads.map(payload => api('/api/works', {
+        method: 'POST', body: JSON.stringify(payload)
+      }))).then(results => { window.concurrentResults = results; });
+    }""", payloads)
+    wait_for_held(page, held, 0)
+    assert len(held) == 1 and local_app[1].list_works() == []
+    held[0].fulfill(response=held[0].fetch())
+    page.wait_for_function("window.concurrentResults?.length === 2")
+    assert len(held) == 1 and len(local_app[1].list_works()) == 2
+
+
+def test_cache_expiry_refreshes_once_without_background_polling(page, local_app):
+    from datetime import timedelta
+    bootstraps = []
+    page.on("request", lambda request: bootstraps.append(request) if request.url.endswith("/api/auth/csrf") else None)
+    page.goto(local_app[0], wait_until="networkidle")
+    page.evaluate("sessionProof()")
+    assert len(bootstraps) == 1
+    later = local_app.auth_service.clock() + timedelta(seconds=601)
+    local_app.auth_service.clock = lambda: later
+    page.evaluate("""() => {
+      const previousNow = Date.now;
+      Date.now = () => previousNow() + 601000;
+    }""")
+    page.evaluate("Promise.all([sessionProof(), sessionProof()])")
+    assert len(bootstraps) == 2
+    page.evaluate("sessionProof()")
+    assert len(bootstraps) == 2
+
+
+def test_failed_bootstrap_preserves_form_key_and_never_sends_write(page, local_app):
+    bootstraps, writes = [], []
+    def bootstrap(route):
+        bootstraps.append(route)
+        if len(bootstraps) == 1:
+            route.fulfill(status=429, json={"detail": "Authentication temporarily limited"})
+        else:
+            route.continue_()
+    page.route("**/api/auth/csrf", bootstrap)
+    page.on("request", lambda request: writes.append(request) if request.method == "POST" else None)
+    page.goto(local_app[0], wait_until="networkidle")
+    fill_inquiry(page)
+    key = page.evaluate("state.creationKey")
+    page.locator('#new-work-form button[type="submit"]').click()
+    expect(page.locator("#new-work-error")).to_have_text("Authentication temporarily limited")
+    expect(page.locator('#new-work-form [name="customer_description"]')).to_have_value("Keksitty tiedustelu")
+    assert page.evaluate("state.creationKey") == key
+    assert len(bootstraps) == 1 and writes == [] and local_app[1].list_works() == []
+    page.locator('#new-work-form button[type="submit"]').click()
+    expect(page.locator("#detail-registration")).to_have_text("TEST-NEW")
+    assert len(bootstraps) == 2 and len(writes) == 1
+    assert writes[0].post_data_json["idempotency_key"] == key
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_rejected_write_invalidates_cache_without_automatic_retry(page, local_app, status):
+    writes, bootstraps = [], []
+    def write(route):
+        if route.request.method != "POST":
+            route.continue_()
+            return
+        writes.append(route.request)
+        if len(writes) == 1:
+            route.fulfill(status=status, json={"detail": "Fictional security rejection"})
+        else:
+            route.continue_()
+    page.route("**/api/works", write)
+    page.on("request", lambda request: bootstraps.append(request) if request.url.endswith("/api/auth/csrf") else None)
+    page.goto(local_app[0], wait_until="networkidle")
+    fill_inquiry(page)
+    page.locator('#new-work-form button[type="submit"]').click()
+    expect(page.locator("#new-work-error")).to_have_text("Fictional security rejection")
+    expect(page.locator('#new-work-form [name="actor"]')).to_have_value("Testikirjaaja")
+    assert len(writes) == 1 and len(bootstraps) == 1
+    assert page.evaluate("sessionCsrf === null")
+    page.locator('#new-work-form button[type="submit"]').click()
+    expect(page.locator("#detail-registration")).to_have_text("TEST-NEW")
+    assert len(writes) == 2 and len(bootstraps) == 2
+    assert writes[0].post_data_json["idempotency_key"] == writes[1].post_data_json["idempotency_key"]
+
+
+def test_lost_labour_response_is_not_retried_and_keeps_draft_and_version(page, local_app):
+    work = seed(local_app[1], "TEST-LOST")
+    writes = []
+    def write(route):
+        writes.append(route.request)
+        if len(writes) == 1:
+            route.fetch()  # Commit succeeded; only the response is lost.
+            route.abort()
+        else:
+            route.continue_()
+    page.route(f"**/api/works/{work['id']}/labour", write)
+    page.goto(local_app[0], wait_until="networkidle")
+    open_work(page, "TEST-LOST")
+    fill_labour(page, "Tallentamaton vastaus")
+    page.locator('#labour-form button[type="submit"]').click()
+    expect(page.locator("#labour-error")).to_be_visible()
+    expect(page.locator('#labour-form [name="work_description"]')).to_have_value("Tallentamaton vastaus")
+    expect(page.locator("#labour-form")).to_have_attribute("data-version", "1")
+    assert len(writes) == 1 and local_app[1].get_work(work["id"])["version"] == 2
+    page.locator('#labour-form button[type="submit"]').click()
+    expect(page.locator("#labour-error")).to_contain_text("toisessa selainikkunassa")
+    assert len(writes) == 2 and len(local_app[1].get_work(work["id"])["events"]) == 2
+
+
+def test_non_session_bootstrap_never_sends_business_write(page, local_app):
+    writes = []
+    page.on("request", lambda request: writes.append(request) if request.method == "POST" else None)
+    page.goto(local_app[0], wait_until="networkidle")
+    fill_inquiry(page)
+    local_app.auth_service.revoke_session(local_app.token)
+    page.locator('#new-work-form button[type="submit"]').click()
+    expect(page.locator("#new-work-error")).to_have_text("Kirjautuminen on vanhentunut. Kirjaudu uudelleen.")
+    expect(page.locator('#new-work-form [name="registration"]')).to_have_value("TEST-NEW")
+    assert writes == [] and local_app[1].list_works() == []
+
+
+def test_invalidated_pending_refresh_cannot_restore_cached_proof(page, local_app):
+    held = []
+    page.route("**/api/auth/csrf", lambda route: held.append(route))
+    page.goto(local_app[0], wait_until="networkidle")
+    page.evaluate("""() => {
+      window.proofOutcome = 'pending';
+      sessionProof().then(() => { window.proofOutcome = 'accepted'; })
+        .catch(() => { window.proofOutcome = 'rejected'; });
+    }""")
+    wait_for_held(page, held, 0)
+    page.evaluate("forgetSessionCsrf()")
+    held[0].fulfill(response=held[0].fetch())
+    page.wait_for_function("window.proofOutcome === 'rejected'")
+    assert page.evaluate("sessionCsrf === null && csrfRefresh === null")
+    assert len(held) == 1
