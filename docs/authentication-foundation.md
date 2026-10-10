@@ -1,18 +1,20 @@
 # Web 4E-2 / vaihe 1: tunnistuksen sisäinen perusta
 
-Tämä toteutus ei lisää HTTP-reittejä, kirjautumissivua tai tunnistusta nykyisiin
-liiketoimintareitteihin. Nykyiset `/api/works`-reitit ovat edelleen ilman
-käyttäjätunnistusta. Älä julkaise nykyistä sovellusta tuotantokäyttöön tämän
-vaiheen perusteella. `TrustedWorkshopContext` on yhä sovelluksen sisäinen
-konteksti, ei todiste kirjautumisesta.
+Web 4E-2 toteutti sisäisen tunnistusperustan ilman HTTP-reittejä. Sen päälle
+toteutettu [Web 4E-3A / Checkpoint 1](http-authentication-checkpoint-1.md) suojaa
+nykyiset liiketoimintareitit, HTML:n ja staattiset tiedostot MFA-istunnolla.
+Kirjautumis- ja palautusreittejä ei vielä ole; selaimen normaali käyttö on
+tarkoituksella estetty ennen seuraavaa tarkistuspistettä. Älä julkaise sovellusta
+tuotantokäyttöön tämän vaiheen perusteella. `TrustedWorkshopContext` on yhä
+sovelluksen sisäinen konteksti, ei todiste kirjautumisesta.
 
 ## Roolit ja tunnistusrajat
 
 | Rooli | Identiteetti | Liiketoiminta | MFA-palautus |
 | --- | --- | --- | --- |
-| `OWNER` | Henkilökohtainen ihminen | Täydet liiketoimintaoikeudet tulevassa adapterissa | Ei ylläpitäjän palautusoikeutta |
+| `OWNER` | Henkilökohtainen ihminen | Nykyisten HTTP-toimintojen luku ja kirjoitus; hyväksyntäsilta myöhemmin | Ei ylläpitäjän palautusoikeutta |
 | `SERVICE_MANAGER` | Henkilökohtainen ihminen | Samat liiketoimintaoikeudet kuin yrittäjällä | Ei ylläpitäjän palautusoikeutta |
-| `IT_ADMIN` | Erillinen henkilökohtainen ihminen | Ei automaattisia hyväksyntäoikeuksia eikä toisen käyttäjänä esiintymistä | Hyväksytyssä arkkitehtuurissa toisen käyttäjän palautuksen itsenäinen hallinta; oma hätäpalautus offline-menettelyllä |
+| `IT_ADMIN` | Erillinen henkilökohtainen ihminen | HTTP-liiketoimintatietojen luku, ei kirjoitusta tai automaattisia hyväksyntäoikeuksia eikä toisen käyttäjänä esiintymistä | Hyväksytyssä arkkitehtuurissa toisen käyttäjän palautuksen itsenäinen hallinta; oma hätäpalautus offline-menettelyllä |
 | `OPENCLAW` | Palveluidentiteetti | Ei ihmiskäyttäjän oikeuksia tai työaikahyväksyntää | Ei käyttäjähallintaa, ihmiskirjautumista tai MFA-palautusoikeuksia |
 
 **Hyväksytty arkkitehtuuripäätös, ei valmis käyttäjähallintatoteutus:** IT_ADMIN
@@ -57,7 +59,8 @@ vielä toteutettu. OpenClaw'n palvelutunnisteiden myöntämistä ei ole toteutet
 käyttöoikeuksilla suojattuun hakemistoon. Suositus on erillinen auth-tietokanta
 palvelutilin hallinnassa, pois staattisista tiedostoista ja repositoryn seurannasta.
 Tuotantopolku ja käyttöjärjestelmäoikeudet päätetään myöhemmin. Käynnistys ei
-luo käyttäjiä, avaimia tai oletussalasanoja. `webapp.main` ei alusta auth-varastoa.
+luo käyttäjiä, avaimia tai oletussalasanoja. Web 4E-3A:n `webapp.main` alustaa
+auth-varaston validoidun konfiguraation perusteella sovelluksen elinkaaressa.
 
 Taulut ovat `auth_users`, `auth_challenges`, `auth_enrollments`,
 `auth_recovery_codes`, `auth_sessions`, `auth_rate_limits`, `auth_events`,
@@ -256,8 +259,8 @@ yhteisen rollbackin.
 Kaikki tunnukset/salasanat ovat keksittyjä testifixtureja; salausavaimet ja MFA-
 salaisuudet generoidaan testin aikana. Repository ei sisällä oikeita tilejä.
 
-Ennen tuotantoa tarvitaan erikseen HTTP/HTTPS-/CSRF-integraatio, kaikkien
-liiketoimintareittien pääsynhallinta, palvelimella ratkaistu liiketoimintakonteksti,
+Ennen tuotantoa tarvitaan erikseen kirjautumisen HTTP/HTTPS-/CSRF-integraatio,
+palvelimella ratkaistu liiketoimintakonteksti ja auditointitekijä,
 luotettu IT_ADMIN-käyttäjähallinta, salasanan vaihto/
 salasanapalautus, yhden ylläpitäjän turvallisen hätäpalautuksen toteutus, MFA-ilmoitusten
 toimitus, avainten ja backupien hallinta, ylläpitäjän offline-palautus sekä

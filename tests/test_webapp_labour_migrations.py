@@ -5,14 +5,14 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from fastapi.testclient import TestClient
+from http_auth_support import AuthenticatedTestClient as TestClient
 
 from webapp.database import WorkRepository
 from webapp.labour_migrations import apply_labour_migrations
 from webapp.labour_models import (
     CoverageStatus, LabourPlanRevisionRecord, OriginalWorkTimeRecord, decimal_storage_text,
 )
-from webapp.main import create_app
+from http_auth_support import create_test_app as create_app
 
 
 NOW = "2026-10-09T12:00:00+00:00"

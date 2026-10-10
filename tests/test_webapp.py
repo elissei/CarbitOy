@@ -3,9 +3,9 @@ from uuid import uuid4
 
 import pytest
 
-from fastapi.testclient import TestClient
+from http_auth_support import AuthenticatedTestClient as TestClient
 
-from webapp.main import create_app
+from http_auth_support import create_test_app as create_app
 
 
 def client_for(tmp_path):

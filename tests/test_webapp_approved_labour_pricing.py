@@ -4,7 +4,7 @@ from decimal import Decimal, Inexact, ROUND_DOWN, localcontext
 from uuid import uuid4
 
 import pytest
-from fastapi.testclient import TestClient
+from http_auth_support import AuthenticatedTestClient as TestClient
 from pydantic import ValidationError
 
 from domain.models.enums import Axle, Side
@@ -24,7 +24,7 @@ from webapp.labour_service import (
     ApproveLabourPlanCommand, LabourPlanService, SaveLabourPlanCommand,
     StaleLabourPlanError, TrustedWorkshopContext, WorkshopPermission, build_storage_labour_plan,
 )
-from webapp.main import create_app
+from http_auth_support import create_test_app as create_app
 
 
 # Test-only identity; production authentication/context issuance is not supplied.

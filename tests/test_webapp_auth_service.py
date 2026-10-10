@@ -20,7 +20,7 @@ from webapp.auth_service import (
     AuthIdempotencyConflictError, AuthPolicy, AuthService, AuthenticationError,
     AuthVersionConflictError, PermissionDeniedError, RateLimitError, TrustedClientContext,
 )
-from webapp.main import create_app
+from http_auth_support import create_test_app as create_app
 
 
 PASSWORD = "Fictional test passphrase only 4E2"
@@ -618,7 +618,7 @@ def test_no_auth_or_recovery_http_routes_or_business_context_bridge(tmp_path):
     assert {route.path for route in app.routes if route.path.startswith('/api/')} == {
         "/api/works", "/api/works/{work_id}", "/api/works/{work_id}/labour",
     }
-    with TestClient(app) as http:
+    with TestClient(app, base_url="https://testserver") as http:
         assert http.post("/api/auth/login").status_code == 404
         assert http.post("/api/auth/reset").status_code == 404
-        assert http.get("/api/works").status_code == 200  # existing behavior deliberately unchanged
+        assert http.get("/api/works").status_code == 401  # no anonymous business access

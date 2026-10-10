@@ -23,6 +23,11 @@ from webapp.database import (
     WorkNotFoundError,
     WorkRepository,
 )
+from webapp.auth_crypto import TotpCipher
+from webapp.auth_repository import AuthRepository
+from webapp.auth_service import AuthService
+from webapp.auth_settings import AuthSettings
+from webapp.http_access import HttpAccessGate, validate_route_coverage
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -76,19 +81,35 @@ class RecordLabourRequest(BaseModel):
         return value.strip() or None
 
 
-def create_app(database_path: str | Path | None = None) -> FastAPI:
+def create_app(
+    database_path: str | Path | None = None, *, auth_settings: AuthSettings | None = None,
+) -> FastAPI:
     selected_path = Path(
         database_path or os.environ.get("CARBIT_DATABASE", DEFAULT_DATABASE)
     )
-    selected_path.parent.mkdir(parents=True, exist_ok=True)
     repository = WorkRepository(selected_path)
 
     @asynccontextmanager
-    async def lifespan(_: FastAPI):
+    async def lifespan(application: FastAPI):
+        settings = auth_settings if auth_settings is not None else AuthSettings.from_environment()
+        application.state.route_access = validate_route_coverage(application)
+        auth_repository = AuthRepository(settings.database_path)
+        auth_repository.initialize()
+        application.state.auth_settings = settings
+        application.state.auth_service = AuthService(
+            auth_repository,
+            TotpCipher(tuple(key.get_secret_value().encode("ascii") for key in settings.totp_keys)),
+            policy=settings.policy,
+        )
+        selected_path.parent.mkdir(parents=True, exist_ok=True)
         repository.initialize()
         yield
 
-    app = FastAPI(title="Carbit työjono", lifespan=lifespan)
+    app = FastAPI(
+        title="Carbit työjono", lifespan=lifespan,
+        docs_url=None, redoc_url=None, openapi_url=None,
+    )
+    app.add_middleware(HttpAccessGate)
     app.state.repository = repository
     app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 

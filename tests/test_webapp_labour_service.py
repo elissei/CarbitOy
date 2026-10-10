@@ -6,7 +6,7 @@ from threading import Barrier
 from uuid import uuid4
 
 import pytest
-from fastapi.testclient import TestClient
+from http_auth_support import AuthenticatedTestClient as TestClient
 from pydantic import ValidationError
 
 from domain.models.enums import Axle, Side
@@ -21,7 +21,7 @@ from webapp.labour_service import (
     StaleLabourPlanError, StoredLabourPlanError, TrustedWorkshopContext,
     WorkshopPermission, build_storage_labour_plan,
 )
-from webapp.main import create_app
+from http_auth_support import create_test_app as create_app
 
 
 # Explicit test context only. Production has no authentication/context issuer yet.
@@ -417,7 +417,8 @@ def test_approval_is_not_exposed_over_http_and_legacy_pricing_still_works(enviro
     saved = service.save_plan(TEST_CONTEXT, save_command(inquiry_id, hours=("1.60",)))
     assert not saved.human_review_required
     with TestClient(create_app(repository.database_path)) as client:
-        paths = set(client.get("/openapi.json").json()["paths"])
+        assert client.get("/openapi.json").status_code == 404
+        paths = set(client.app.openapi()["paths"])
         assert paths == {"/api/works", "/api/works/{work_id}", "/api/works/{work_id}/labour"}
         assert client.post(f"/api/works/{inquiry_id}/approve", json={"reviewer_id": "admin"}).status_code == 404
         response = client.put(f"/api/works/{inquiry_id}/labour", json={

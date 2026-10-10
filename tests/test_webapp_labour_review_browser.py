@@ -4,11 +4,11 @@ import json
 import re
 
 import pytest
-from fastapi.testclient import TestClient
+from http_auth_support import AuthenticatedTestClient as TestClient
 from playwright.sync_api import expect
 
 from test_webapp_browser import browser, local_app, page  # noqa: F401
-from webapp.main import create_app
+from http_auth_support import create_test_app as create_app
 
 
 DEMO_PATH = "/static/labour-review-demo.html"

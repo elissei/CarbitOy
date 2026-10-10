@@ -9,7 +9,15 @@ import pytest
 import uvicorn
 from playwright.sync_api import expect, sync_playwright
 
-from webapp.main import create_app
+from http_auth_support import create_test_app as create_app, grant_session, local_tls_files, settings_for
+from webapp.auth_models import SessionCookiePolicy
+
+
+class LocalApp(tuple):
+    def __new__(cls, url, repository, token):
+        result = super().__new__(cls, (url, repository))
+        result.token = token
+        return result
 
 
 @pytest.fixture(scope="module")
@@ -22,10 +30,15 @@ def browser():
 
 @pytest.fixture
 def local_app(tmp_path):
-    app = create_app(tmp_path / "browser.db")
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
-    server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
+    url = f"https://127.0.0.1:{listener.getsockname()[1]}"
+    app = create_app(tmp_path / "browser.db", auth_settings=settings_for(tmp_path / "auth.db", url))
+    cert_path, key_path = local_tls_files(tmp_path)
+    server = uvicorn.Server(uvicorn.Config(
+        app, log_level="critical", proxy_headers=False,
+        ssl_certfile=str(cert_path), ssl_keyfile=str(key_path),
+    ))
     thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
     thread.start()
     try:
@@ -34,7 +47,8 @@ def local_app(tmp_path):
             if not thread.is_alive() or time.monotonic() > deadline:
                 raise RuntimeError("Local test server did not start")
             threading.Event().wait(0.01)
-        yield f"http://127.0.0.1:{listener.getsockname()[1]}", app.state.repository
+        grant = grant_session(app.state.auth_service)
+        yield LocalApp(url, app.state.repository, grant.token.get_secret_value())
     finally:
         server.should_exit = True
         thread.join(timeout=10)
@@ -42,8 +56,12 @@ def local_app(tmp_path):
 
 
 @pytest.fixture
-def page(browser):
-    context = browser.new_context(viewport={"width": 1280, "height": 900})
+def page(browser, local_app):
+    context = browser.new_context(viewport={"width": 1280, "height": 900}, ignore_https_errors=True)
+    context.add_cookies([{
+        "name": SessionCookiePolicy().name, "value": local_app.token, "url": local_app[0],
+        "secure": True, "httpOnly": True, "sameSite": "Strict",
+    }])
     page = context.new_page()
     yield page
     page.unroute_all(behavior="ignoreErrors")
