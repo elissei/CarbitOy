@@ -40,6 +40,11 @@ staattisen tarkistuksen; tämä ei korvaa natiivin Python 3.12:n ajonaikaisia te
 | `requirements/locks/windows-amd64-py313-*.txt` | Kokonaiset Windows-kohtaiset riippuvuusketjut ja SHA-256-tiivisteet | Windows-asennukset |
 | `requirements-web.txt` | Viittaus Windowsin dev-lukitukseen | Vanhan PowerShell-asennuskomennon yhteensopivuus |
 
+Web 4E-2:n tunnistusperusta lisää runtimeen argon2-cffi:n, cryptographyn ja PyOTP:n.
+Windows-lukitukset sisältävät myös niiden tarkat välilliset riippuvuudet;
+aiemmat pakettiversiot säilyvät. [Tunnistuksen rajat ja käyttömenettely](authentication-foundation.md).
+Yllä kirjattu 356 testin varmennus koskee Web 4E-1:n versiota ennen tätä lisäystä.
+
 Pydantic ja PyYAML on nyt määritelty suoriksi riippuvuuksiksi, koska Python-koodi
 tuo ne itse. SQLite, Decimal ja muut standardikirjaston moduulit tulevat Pythonin
 mukana. `webapp.main` ei tuo OpenAI-adaptereita; SDK ei kuulu web-palvelun

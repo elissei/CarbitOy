@@ -1,0 +1,381 @@
+"""Internal two-factor authentication. Never expose provisioning or keys over HTTP.
+
+Business APIs intentionally remain unconnected. Resolve a real session at the
+future HTTP boundary; User/TrustedWorkshopContext construction is not auth.
+"""
+
+import hashlib
+import json
+import re
+import secrets
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Callable
+from uuid import uuid4
+
+import pyotp
+from cryptography.fernet import InvalidToken
+from pydantic import SecretStr
+
+from webapp.auth_crypto import (
+    PasswordService, TotpCipher, matching_totp_step, new_recovery_codes,
+    recovery_digest, token_digest,
+)
+from webapp.auth_models import (
+    EnrollmentGrant, IdentityKind, LoginChallenge, MfaEnrollment, MfaResetRequest,
+    MfaResetResult, SessionGrant, SessionRecord, User, UserRole,
+)
+from webapp.auth_repository import AuthRepository
+
+
+class AuthenticationError(ValueError):
+    """Intentionally generic: do not reveal account/factor existence."""
+
+
+class PermissionDeniedError(AuthenticationError):
+    pass
+
+
+class RateLimitError(AuthenticationError):
+    pass
+
+
+class AuthVersionConflictError(ValueError):
+    pass
+
+
+class AuthIdempotencyConflictError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class AuthPolicy:
+    challenge_seconds: int = 300
+    session_seconds: int = 8 * 3600
+    idle_seconds: int = 30 * 60
+    admin_mfa_fresh_seconds: int = 300
+    limit_window_seconds: int = 300
+    individual_attempts: int = 5
+    global_attempts: int = 30
+
+    def __post_init__(self):
+        values = tuple(vars(self).values())
+        if any(type(value) is not int or value <= 0 for value in values):
+            raise ValueError("authentication limits must be positive integers")
+        if self.individual_attempts > self.global_attempts:
+            raise ValueError("individual attempts exceed global attempts")
+
+
+@dataclass(frozen=True)
+class TrustedClientContext:
+    """Server-derived connection key; never take it from an untrusted body/header."""
+
+    connection_key: str
+
+    def __post_init__(self):
+        if not isinstance(self.connection_key, str) or not 1 <= len(self.connection_key) <= 128:
+            raise ValueError("server connection key must be bounded")
+
+
+def _utc(value: int) -> datetime:
+    return datetime.fromtimestamp(value, timezone.utc)
+
+
+def _user(row) -> User:
+    return User(
+        user_id=row["user_id"], username=row["username"], display_name=row["display_name"],
+        role=row["role"], kind=row["kind"], enabled=bool(row["enabled"]),
+        mfa_enabled=bool(row["mfa_enabled"]), auth_version=row["auth_version"],
+        created_at=_utc(row["created_at"]),
+    )
+
+
+class AuthService:
+    def __init__(
+        self, repository: AuthRepository, cipher: TotpCipher, *,
+        passwords: PasswordService | None = None,
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        policy: AuthPolicy = AuthPolicy(),
+    ) -> None:
+        self.repository = repository
+        self.cipher = cipher
+        self.passwords = passwords or PasswordService()
+        self.clock = clock
+        self.policy = policy
+
+    def _now(self) -> int:
+        value = self.clock()
+        if value.utcoffset() is None:
+            raise ValueError("server clock must be timezone-aware")
+        return int(value.timestamp())
+
+    @staticmethod
+    def _audit(connection, event, now, *, actor=None, subject=None, details=None) -> int:
+        return connection.execute(
+            "INSERT INTO auth_events(event_type,actor_user_id,subject_user_id,occurred_at,details_json) "
+            "VALUES (?,?,?,?,?)",
+            (event, actor, subject, now, json.dumps(details or {}, sort_keys=True)),
+        ).lastrowid
+
+    @staticmethod
+    def _opaque_digest(token: str) -> str:
+        if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+            # Unknown token goes through the same limited authentication path.
+            return "invalid-token"
+        return token_digest(token)
+
+    def _reserve(self, connection, phase: str, account: str, client: TrustedClientContext, now: int) -> bool:
+        if not isinstance(client, TrustedClientContext):
+            raise TypeError("use a server-derived client context")
+        connection.execute("DELETE FROM auth_rate_limits WHERE window_start < ?", (now - 86400,))
+        scopes = (("global", self.policy.global_attempts),
+                  ("account:" + account, self.policy.individual_attempts),
+                  ("client:" + client.connection_key, self.policy.individual_attempts))
+        for scope, limit in scopes:
+            digest = hashlib.sha256((phase + ":" + scope).encode()).hexdigest()
+            row = connection.execute("SELECT * FROM auth_rate_limits WHERE scope_hash=?", (digest,)).fetchone()
+            if row and now < row["window_start"] + self.policy.limit_window_seconds and row["attempts"] >= limit:
+                self._audit(connection, "AUTH_RATE_LIMITED", now)
+                return False
+            if not row or now >= row["window_start"] + self.policy.limit_window_seconds:
+                connection.execute(
+                    "INSERT INTO auth_rate_limits VALUES (?,?,1) "
+                    "ON CONFLICT(scope_hash) DO UPDATE SET window_start=excluded.window_start,attempts=1",
+                    (digest, now),
+                )
+            else:
+                connection.execute("UPDATE auth_rate_limits SET attempts=attempts+1 WHERE scope_hash=?", (digest,))
+        return True
+
+    def provision_identity(self, *, username: str, display_name: str, role: UserRole, password: str | None = None) -> User:
+        """Offline trusted operator only. No registration route or default accounts.
+
+        The future admin adapter must not publish this bootstrap method.
+        """
+        if not isinstance(username, str) or not re.fullmatch(r"[a-zA-Z][a-zA-Z0-9._-]{2,63}", username):
+            raise ValueError("invalid bounded account name")
+        if not isinstance(display_name, str) or not 1 <= len(display_name.strip()) <= 200:
+            raise ValueError("invalid display name")
+        role = UserRole(role)
+        kind = IdentityKind.SERVICE if role == UserRole.OPENCLAW else IdentityKind.HUMAN
+        if kind == IdentityKind.SERVICE:
+            if password is not None:
+                raise ValueError("OpenClaw cannot receive a human password")
+            password_hash = None
+        else:
+            password_hash = self.passwords.hash_password(password)
+        now, user_id = self._now(), str(uuid4())
+        with self.repository.transaction() as connection:
+            connection.execute(
+                "INSERT INTO auth_users(user_id,username,display_name,kind,role,password_hash,created_at) VALUES (?,?,?,?,?,?,?)",
+                (user_id, username.lower(), display_name.strip(), kind.value, role.value, password_hash, now),
+            )
+            self._audit(connection, "IDENTITY_PROVISIONED", now, subject=user_id, details={"role": role.value})
+            return _user(connection.execute("SELECT * FROM auth_users WHERE user_id=?", (user_id,)).fetchone())
+
+    def begin_login(self, username: str, password: str, *, client: TrustedClientContext) -> LoginChallenge:
+        if not isinstance(username, str) or not 1 <= len(username) <= 64:
+            raise AuthenticationError("authentication failed")
+        username = username.lower()
+        now = self._now()
+        with self.repository.transaction() as connection:
+            allowed = self._reserve(connection, "PASSWORD", username, client, now)
+            row = connection.execute("SELECT * FROM auth_users WHERE username=?", (username,)).fetchone()
+        if not allowed:
+            raise RateLimitError("authentication temporarily limited")
+        # A peer may upgrade the same hash. Reverify its replacement once, outside
+        # the write lock. Never treat an arbitrary changed hash as verified, and
+        # never cross an auth-version change (e.g. MFA reset) on a retry.
+        original = row
+        for attempt in range(2):
+            human = row is not None and row["kind"] == "HUMAN" and row["enabled"] == 1
+            valid = self.passwords.verify(row["password_hash"] if human else None, password)
+            replacement = None
+            if valid and self.passwords.check_needs_rehash(row["password_hash"]):
+                replacement = self.passwords.hash_password(password)
+            now = self._now()
+            with self.repository.transaction() as connection:
+                current = connection.execute("SELECT * FROM auth_users WHERE username=?", (username,)).fetchone()
+                if not valid or current is None or not current["enabled"] or current["kind"] != "HUMAN" or current["user_id"] != original["user_id"] or current["auth_version"] != original["auth_version"]:
+                    retry = False
+                elif current["password_hash"] != row["password_hash"]:
+                    retry = attempt == 0
+                else:
+                    if replacement is not None:
+                        updated = connection.execute(
+                            "UPDATE auth_users SET password_hash=? "
+                            "WHERE user_id=? AND auth_version=? AND password_hash=? AND enabled=1",
+                            (replacement, current["user_id"], current["auth_version"], row["password_hash"]),
+                        )
+                        if updated.rowcount != 1:
+                            raise AuthenticationError("authentication failed")
+                        self._audit(connection, "PASSWORD_REHASHED", now, subject=current["user_id"])
+                    token = secrets.token_urlsafe(32)
+                    purpose = "LOGIN" if current["mfa_enabled"] else "ENROLL"
+                    connection.execute(
+                        "INSERT INTO auth_challenges(token_hash,user_id,auth_version,purpose,created_at,expires_at) VALUES (?,?,?,?,?,?)",
+                        (token_digest(token), current["user_id"], current["auth_version"], purpose, now, now + self.policy.challenge_seconds),
+                    )
+                    self._audit(connection, "PASSWORD_VERIFIED", now, subject=current["user_id"])
+                    return LoginChallenge(token=SecretStr(token), requires_enrollment=purpose == "ENROLL", expires_at=_utc(now + self.policy.challenge_seconds))
+                if not retry:
+                    self._audit(connection, "PASSWORD_REJECTED", now, subject=original["user_id"] if original else None)
+            if not retry:
+                raise AuthenticationError("authentication failed")
+            row = current
+        raise AuthenticationError("authentication failed")
+
+    def _challenge(self, connection, token, purpose, now):
+        digest = self._opaque_digest(token)
+        row = connection.execute("SELECT * FROM auth_challenges WHERE token_hash=?", (digest,)).fetchone()
+        if row is None:
+            return None, None
+        user = connection.execute("SELECT * FROM auth_users WHERE user_id=?", (row["user_id"],)).fetchone()
+        if row["purpose"] != purpose or row["consumed_at"] is not None or not row["created_at"] <= now < row["expires_at"] or row["auth_version"] != user["auth_version"] or not user["enabled"] or user["kind"] != "HUMAN":
+            return None, None
+        return row, user
+
+    def begin_mfa_enrollment(self, challenge_token: str) -> MfaEnrollment:
+        now = self._now()
+        with self.repository.transaction() as connection:
+            challenge, user = self._challenge(connection, challenge_token, "ENROLL", now)
+            if challenge is None or user["mfa_enabled"]:
+                raise AuthenticationError("authentication failed")
+            existing = connection.execute("SELECT * FROM auth_enrollments WHERE user_id=?", (user["user_id"],)).fetchone()
+            if existing and existing["challenge_hash"] == challenge["token_hash"] and existing["expires_at"] > now:
+                secret = self.cipher.decrypt(user["user_id"], existing["totp_ciphertext"])
+            else:
+                secret = pyotp.random_base32()
+                connection.execute("DELETE FROM auth_enrollments WHERE user_id=?", (user["user_id"],))
+                connection.execute("INSERT INTO auth_enrollments VALUES (?,?,?,?,?)", (user["user_id"], challenge["token_hash"], user["auth_version"], self.cipher.encrypt(user["user_id"], secret), challenge["expires_at"]))
+                self._audit(connection, "MFA_ENROLLMENT_STARTED", now, subject=user["user_id"])
+            return MfaEnrollment(secret=SecretStr(secret), provisioning_uri=SecretStr(pyotp.TOTP(secret).provisioning_uri(user["username"], issuer_name="Carbit Oy")), expires_at=_utc(challenge["expires_at"]))
+
+    def _new_session(self, connection, user, now, factor) -> SessionGrant:
+        token, session_id = secrets.token_urlsafe(32), str(uuid4())
+        expiry = now + self.policy.session_seconds
+        connection.execute(
+            "INSERT INTO auth_sessions(session_id,token_hash,user_id,auth_version,factor,created_at,mfa_verified_at,expires_at,last_seen_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (session_id, token_digest(token), user["user_id"], user["auth_version"], factor, now, now, expiry, now),
+        )
+        return SessionGrant(token=SecretStr(token), user=_user(user), session=SessionRecord(session_id=session_id, user_id=user["user_id"], auth_version=user["auth_version"], factor=factor, created_at=_utc(now), mfa_verified_at=_utc(now), expires_at=_utc(expiry)))
+
+    def confirm_mfa_enrollment(self, challenge_token: str, code: str, *, client: TrustedClientContext) -> EnrollmentGrant:
+        now = self._now()
+        with self.repository.transaction() as connection:
+            challenge, user = self._challenge(connection, challenge_token, "ENROLL", now)
+            allowed = self._reserve(connection, "MFA", user["user_id"] if user else "unknown", client, now)
+            pending = connection.execute("SELECT * FROM auth_enrollments WHERE challenge_hash=?", (self._opaque_digest(challenge_token),)).fetchone()
+            step = None
+            if allowed and user and not user["mfa_enabled"] and pending and pending["auth_version"] == user["auth_version"] and pending["expires_at"] > now:
+                step = matching_totp_step(self.cipher.decrypt(user["user_id"], pending["totp_ciphertext"]), code, now, None)
+            if step is None:
+                self._audit(connection, "MFA_REJECTED", now, subject=user["user_id"] if user else None)
+                result = None
+            else:
+                connection.execute("UPDATE auth_users SET mfa_enabled=1,totp_ciphertext=?,last_totp_step=? WHERE user_id=?", (pending["totp_ciphertext"], step, user["user_id"]))
+                connection.execute("DELETE FROM auth_enrollments WHERE user_id=?", (user["user_id"],))
+                connection.execute("UPDATE auth_challenges SET consumed_at=? WHERE user_id=? AND consumed_at IS NULL", (now, user["user_id"]))
+                codes = new_recovery_codes()
+                connection.executemany("INSERT INTO auth_recovery_codes(user_id,auth_version,code_hash) VALUES (?,?,?)", [(user["user_id"], user["auth_version"], recovery_digest(user["user_id"], item)) for item in codes])
+                current = connection.execute("SELECT * FROM auth_users WHERE user_id=?", (user["user_id"],)).fetchone()
+                grant = self._new_session(connection, current, now, "TOTP")
+                self._audit(connection, "MFA_ENROLLED", now, subject=user["user_id"])
+                self._audit(connection, "SESSION_GRANTED", now, subject=user["user_id"], details={"factor": "TOTP"})
+                result = EnrollmentGrant(session=grant, recovery_codes=tuple(SecretStr(item) for item in codes))
+        if not allowed:
+            raise RateLimitError("authentication temporarily limited")
+        if result is None:
+            raise AuthenticationError("authentication failed")
+        return result
+
+    def complete_login(self, challenge_token: str, *, client: TrustedClientContext, totp_code: str | None = None, recovery_code: str | None = None) -> SessionGrant:
+        now = self._now()
+        with self.repository.transaction() as connection:
+            challenge, user = self._challenge(connection, challenge_token, "LOGIN", now)
+            allowed = self._reserve(connection, "MFA", user["user_id"] if user else "unknown", client, now)
+            valid, factor = False, "TOTP"
+            if allowed and user and user["mfa_enabled"] and ((totp_code is None) != (recovery_code is None)):
+                if totp_code is not None:
+                    step = matching_totp_step(self.cipher.decrypt(user["user_id"], user["totp_ciphertext"]), totp_code, now, user["last_totp_step"])
+                    if step is not None:
+                        connection.execute("UPDATE auth_users SET last_totp_step=? WHERE user_id=?", (step, user["user_id"]))
+                        valid = True
+                else:
+                    digest = recovery_digest(user["user_id"], recovery_code)
+                    valid = connection.execute("UPDATE auth_recovery_codes SET consumed_at=? WHERE user_id=? AND auth_version=? AND code_hash=? AND consumed_at IS NULL", (now, user["user_id"], user["auth_version"], digest)).rowcount == 1
+                    factor = "RECOVERY"
+            if not valid:
+                self._audit(connection, "MFA_REJECTED", now, subject=user["user_id"] if user else None)
+                result = None
+            else:
+                connection.execute("UPDATE auth_challenges SET consumed_at=? WHERE token_hash=?", (now, challenge["token_hash"]))
+                result = self._new_session(connection, user, now, factor)
+                self._audit(connection, "SESSION_GRANTED", now, subject=user["user_id"], details={"factor": factor})
+        if not allowed:
+            raise RateLimitError("authentication temporarily limited")
+        if result is None:
+            raise AuthenticationError("authentication failed")
+        return result
+
+    def _session(self, connection, token: str, now: int):
+        session = connection.execute("SELECT * FROM auth_sessions WHERE token_hash=?", (self._opaque_digest(token),)).fetchone()
+        user = connection.execute("SELECT * FROM auth_users WHERE user_id=?", (session["user_id"],)).fetchone() if session else None
+        if session is None or session["revoked_at"] is not None or not session["created_at"] <= now < session["expires_at"] or now >= session["last_seen_at"] + self.policy.idle_seconds or not user["enabled"] or not user["mfa_enabled"] or user["kind"] != "HUMAN" or session["auth_version"] != user["auth_version"]:
+            raise AuthenticationError("authentication failed")
+        return session, user
+
+    def require_session(self, token: str) -> User:
+        now = self._now()
+        with self.repository.transaction() as connection:
+            session, user = self._session(connection, token, now)
+            connection.execute("UPDATE auth_sessions SET last_seen_at=? WHERE session_id=?", (now, session["session_id"]))
+            return _user(user)
+
+    def revoke_session(self, token: str) -> None:
+        now = self._now()
+        with self.repository.transaction() as connection:
+            session, user = self._session(connection, token, now)
+            connection.execute("UPDATE auth_sessions SET revoked_at=? WHERE session_id=?", (now, session["session_id"]))
+            self._audit(connection, "SESSION_REVOKED", now, actor=user["user_id"], subject=user["user_id"])
+
+    def reset_user_mfa(self, admin_session_token: str, request: MfaResetRequest) -> MfaResetResult:
+        # Browser-supplied role/reviewer/timestamp cannot authorize this call.
+        request = MfaResetRequest.model_validate(request.model_dump() if isinstance(request, MfaResetRequest) else request)
+        try:
+            return self._reset_user_mfa(admin_session_token, request)
+        except (AuthenticationError, AuthVersionConflictError, AuthIdempotencyConflictError):
+            # Failed authorization is auditable, but never commits reset side effects.
+            with self.repository.transaction() as connection:
+                actor = connection.execute("SELECT user_id FROM auth_sessions WHERE token_hash=?", (self._opaque_digest(admin_session_token),)).fetchone()
+                target = connection.execute("SELECT user_id FROM auth_users WHERE user_id=?", (str(request.target_user_id),)).fetchone()
+                self._audit(connection, "MFA_RESET_REJECTED", self._now(), actor=actor[0] if actor else None, subject=target[0] if target else None)
+            raise
+
+    def _reset_user_mfa(self, admin_session_token: str, request: MfaResetRequest) -> MfaResetResult:
+        payload, now = request.model_dump_json(), self._now()
+        with self.repository.transaction() as connection:
+            session, admin = self._session(connection, admin_session_token, now)
+            if admin["role"] != UserRole.IT_ADMIN.value or session["factor"] != "TOTP" or not 0 <= now - session["mfa_verified_at"] < self.policy.admin_mfa_fresh_seconds:
+                raise PermissionDeniedError("a recent administrator TOTP session is required")
+            previous = connection.execute("SELECT * FROM auth_reset_requests WHERE actor_user_id=? AND request_id=?", (admin["user_id"], str(request.request_id))).fetchone()
+            if previous:
+                if previous["request_json"] != payload:
+                    raise AuthIdempotencyConflictError("recovery request key has different content")
+                return MfaResetResult.model_validate_json(previous["result_json"])
+            target = connection.execute("SELECT * FROM auth_users WHERE user_id=?", (str(request.target_user_id),)).fetchone()
+            if target is None or target["kind"] != "HUMAN" or target["role"] not in (UserRole.OWNER.value, UserRole.SERVICE_MANAGER.value):
+                raise PermissionDeniedError("administrator/service recovery requires a separate procedure")
+            if target["auth_version"] != request.expected_auth_version:
+                raise AuthVersionConflictError("authentication state has changed")
+            connection.execute("UPDATE auth_users SET mfa_enabled=0,totp_ciphertext=NULL,last_totp_step=NULL,auth_version=auth_version+1 WHERE user_id=?", (target["user_id"],))
+            connection.execute("UPDATE auth_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now, target["user_id"]))
+            connection.execute("UPDATE auth_challenges SET consumed_at=? WHERE user_id=? AND consumed_at IS NULL", (now, target["user_id"]))
+            connection.execute("DELETE FROM auth_enrollments WHERE user_id=?", (target["user_id"],))
+            connection.execute("DELETE FROM auth_recovery_codes WHERE user_id=?", (target["user_id"],))
+            event_id = self._audit(connection, "MFA_RESET", now, actor=admin["user_id"], subject=target["user_id"], details={"identity_verification_reference": request.identity_verification_reference, "reason": request.reason, "previous_auth_version": target["auth_version"]})
+            notification_id = str(uuid4())
+            connection.execute("INSERT INTO auth_notification_outbox(notification_id,user_id,event_id,message_type,created_at) VALUES (?,?,?,?,?)", (notification_id, target["user_id"], event_id, "MFA_RESET", now))
+            result = MfaResetResult(target_user_id=target["user_id"], auth_version=target["auth_version"] + 1, audit_event_id=event_id, notification_id=notification_id)
+            connection.execute("INSERT INTO auth_reset_requests VALUES (?,?,?,?)", (admin["user_id"], str(request.request_id), payload, result.model_dump_json()))
+            return result
