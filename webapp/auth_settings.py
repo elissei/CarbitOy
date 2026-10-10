@@ -61,6 +61,8 @@ class AuthSettings:
             raise AuthConfigurationError("authentication database cannot be in static files")
         if not isinstance(self.policy, AuthPolicy):
             raise AuthConfigurationError("invalid authentication policy")
+        if self.policy.session_seconds > 8 * 3600 or self.policy.idle_seconds > 1800 or self.policy.challenge_seconds > 300:
+            raise AuthConfigurationError("authentication lifetimes exceed HTTP limits")
         if not isinstance(self.allowed_hosts, tuple) or not self.allowed_hosts:
             raise AuthConfigurationError("exact allowed hosts are required")
         for host in self.allowed_hosts:

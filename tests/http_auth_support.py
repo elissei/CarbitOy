@@ -67,7 +67,8 @@ class AuthenticatedTestClient(TestClient):
     def __enter__(self):
         super().__enter__()
         self.grant = grant_session(self.app.state.auth_service, self.role)
-        # Only tests inject a server-created token. No application cookie issuer.
+        # Existing business regressions inject a genuine server-created MFA
+        # session; endpoint lifecycle tests separately exercise HTTP issuance.
         self.cookies.set(SessionCookiePolicy().name, self.grant.token.get_secret_value())
         return self
 

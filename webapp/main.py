@@ -24,10 +24,12 @@ from webapp.database import (
     WorkRepository,
 )
 from webapp.auth_crypto import TotpCipher
+from webapp.auth_csrf import CsrfProtector
 from webapp.auth_repository import AuthRepository
 from webapp.auth_service import AuthService
 from webapp.auth_settings import AuthSettings
 from webapp.http_access import HttpAccessGate, validate_route_coverage
+from webapp.http_auth import register_auth_routes
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -101,6 +103,9 @@ def create_app(
             TotpCipher(tuple(key.get_secret_value().encode("ascii") for key in settings.totp_keys)),
             policy=settings.policy,
         )
+        application.state.csrf_protector = CsrfProtector(
+            settings, clock=lambda: application.state.auth_service.clock(),
+        )
         selected_path.parent.mkdir(parents=True, exist_ok=True)
         repository.initialize()
         yield
@@ -111,6 +116,7 @@ def create_app(
     )
     app.add_middleware(HttpAccessGate)
     app.state.repository = repository
+    register_auth_routes(app)
     app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
     @app.get("/", include_in_schema=False)

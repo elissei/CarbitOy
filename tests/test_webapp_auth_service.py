@@ -613,12 +613,13 @@ def test_reset_requires_verification_evidence_and_no_customer_notification_desti
             reset_request(user, **changes)
 
 
-def test_no_auth_or_recovery_http_routes_or_business_context_bridge(tmp_path):
+def test_only_approved_auth_routes_and_no_recovery_or_business_context_bridge(tmp_path):
     app = create_app(tmp_path / "work.db")
     assert {route.path for route in app.routes if route.path.startswith('/api/')} == {
         "/api/works", "/api/works/{work_id}", "/api/works/{work_id}/labour",
+        "/api/auth/csrf", "/api/auth/login", "/api/auth/mfa", "/api/auth/session", "/api/auth/logout",
     }
     with TestClient(app, base_url="https://testserver") as http:
-        assert http.post("/api/auth/login").status_code == 404
+        assert http.post("/api/auth/login").status_code == 403
         assert http.post("/api/auth/reset").status_code == 404
         assert http.get("/api/works").status_code == 401  # no anonymous business access

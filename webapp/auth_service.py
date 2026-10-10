@@ -77,6 +77,15 @@ class TrustedClientContext:
             raise ValueError("server connection key must be bounded")
 
 
+@dataclass(frozen=True)
+class ValidatedSession:
+    """Server-validated identity and deadlines; contains no bearer token."""
+
+    user: User
+    absolute_expiry: datetime
+    idle_expiry: datetime
+
+
 def _utc(value: int) -> datetime:
     return datetime.fromtimestamp(value, timezone.utc)
 
@@ -124,13 +133,14 @@ class AuthService:
             return "invalid-token"
         return token_digest(token)
 
-    def _reserve(self, connection, phase: str, account: str, client: TrustedClientContext, now: int) -> bool:
+    def _reserve(self, connection, phase: str, account: str | None, client: TrustedClientContext, now: int) -> bool:
         if not isinstance(client, TrustedClientContext):
             raise TypeError("use a server-derived client context")
         connection.execute("DELETE FROM auth_rate_limits WHERE window_start < ?", (now - 86400,))
-        scopes = (("global", self.policy.global_attempts),
-                  ("account:" + account, self.policy.individual_attempts),
-                  ("client:" + client.connection_key, self.policy.individual_attempts))
+        scopes = (("global", self.policy.global_attempts),)
+        if account is not None:
+            scopes += (("account:" + account, self.policy.individual_attempts),)
+        scopes += (("client:" + client.connection_key, self.policy.individual_attempts),)
         for scope, limit in scopes:
             digest = hashlib.sha256((phase + ":" + scope).encode()).hexdigest()
             row = connection.execute("SELECT * FROM auth_rate_limits WHERE scope_hash=?", (digest,)).fetchone()
@@ -146,6 +156,31 @@ class AuthService:
             else:
                 connection.execute("UPDATE auth_rate_limits SET attempts=attempts+1 WHERE scope_hash=?", (digest,))
         return True
+
+    def reserve_http_auth(self, operation: str, *, client: TrustedClientContext) -> None:
+        """Bound all auth HTTP attempts, including malformed/CSRF requests."""
+        if operation not in {"csrf", "login", "mfa", "session", "logout"}:
+            raise ValueError("unknown authentication operation")
+        with self.repository.transaction() as connection:
+            allowed = self._reserve(connection, "HTTP_AUTH:" + operation, None, client, self._now())
+        if not allowed:
+            raise RateLimitError("authentication temporarily limited")
+
+    def audit_http_auth(self, operation: str, status_code: int) -> None:
+        if operation not in {"csrf", "login", "mfa", "session", "logout"} or type(status_code) is not int:
+            raise ValueError("invalid authentication boundary event")
+        with self.repository.transaction() as connection:
+            self._audit(connection, "AUTH_HTTP_RESULT", self._now(), details={
+                "operation": operation, "status": status_code,
+            })
+
+    def inspect_login_challenge(self, token: str) -> datetime:
+        """Check persisted consumption, identity, auth version and expiry."""
+        with self.repository.transaction() as connection:
+            challenge, user = self._challenge(connection, token, "LOGIN", self._now())
+            if challenge is None or not user["mfa_enabled"]:
+                raise AuthenticationError("authentication failed")
+            return _utc(challenge["expires_at"])
 
     def provision_identity(self, *, username: str, display_name: str, role: UserRole, password: str | None = None) -> User:
         """Offline trusted operator only. No registration route or default accounts.
@@ -321,16 +356,24 @@ class AuthService:
     def _session(self, connection, token: str, now: int):
         session = connection.execute("SELECT * FROM auth_sessions WHERE token_hash=?", (self._opaque_digest(token),)).fetchone()
         user = connection.execute("SELECT * FROM auth_users WHERE user_id=?", (session["user_id"],)).fetchone() if session else None
-        if session is None or session["revoked_at"] is not None or not session["created_at"] <= now < session["expires_at"] or now >= session["last_seen_at"] + self.policy.idle_seconds or not user["enabled"] or not user["mfa_enabled"] or user["kind"] != "HUMAN" or session["auth_version"] != user["auth_version"]:
+        if session is None or user is None or session["revoked_at"] is not None or not session["created_at"] <= now < session["expires_at"] or now >= session["last_seen_at"] + self.policy.idle_seconds or not user["enabled"] or not user["mfa_enabled"] or user["kind"] != "HUMAN" or session["auth_version"] != user["auth_version"]:
             raise AuthenticationError("authentication failed")
         return session, user
 
     def require_session(self, token: str) -> User:
+        return self.inspect_session(token, touch=True).user
+
+    def inspect_session(self, token: str, *, touch: bool = False) -> ValidatedSession:
+        """Validate before optionally refreshing idle time; never extend absolute time."""
         now = self._now()
         with self.repository.transaction() as connection:
             session, user = self._session(connection, token, now)
-            connection.execute("UPDATE auth_sessions SET last_seen_at=? WHERE session_id=?", (now, session["session_id"]))
-            return _user(user)
+            last_seen = session["last_seen_at"]
+            if touch:
+                last_seen = now
+                connection.execute("UPDATE auth_sessions SET last_seen_at=? WHERE session_id=?", (now, session["session_id"]))
+            return ValidatedSession(_user(user), _utc(session["expires_at"]),
+                                    _utc(min(session["expires_at"], last_seen + self.policy.idle_seconds)))
 
     def revoke_session(self, token: str) -> None:
         now = self._now()

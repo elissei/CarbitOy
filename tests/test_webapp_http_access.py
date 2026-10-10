@@ -167,10 +167,12 @@ def test_plain_http_is_rejected_even_with_valid_session(http):
     assert http.get("http://testserver/api/works").status_code == 400
 
 
-def test_route_inventory_and_no_new_sensitive_endpoints(http):
+def test_route_inventory_and_no_unapproved_sensitive_endpoints(http):
     assert len(validate_route_coverage(http.app)) == len(ROUTE_PERMISSIONS)
     assert set(http.app.openapi()["paths"]) == {"/api/works", "/api/works/{work_id}", "/api/works/{work_id}/labour"}
-    for path in ("/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc", "/api/auth/login", "/api/auth/mfa", "/api/auth/reset", "/api/users", "/api/works/test/approve"):
+    assert http.get("/api/auth/login").status_code == 405
+    assert http.get("/api/auth/mfa").status_code == 405
+    for path in ("/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc", "/api/auth/reset", "/api/auth/enroll", "/api/auth/recover", "/api/users", "/api/works/test/approve"):
         assert http.get(path).status_code == 404
         assert http.post(path).status_code == 404
 

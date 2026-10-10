@@ -1,5 +1,8 @@
 # Web 4E-3A: Checkpoint 2B-1 — isolated CSRF foundation
 
+Historical checkpoint snapshot. The primitives below are now connected through
+[Checkpoint 2B-2](http-authentication-checkpoint-2b-2.md)'s authentication adapter.
+
 Implemented: validated CSRF signing-key configuration, context-bound proofs,
 encrypted browser-context envelopes and reusable cookie helpers. **There are no
 new HTTP endpoints, cookie-issuing handlers or CSRF enforcement in the access

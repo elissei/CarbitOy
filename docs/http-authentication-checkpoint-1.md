@@ -1,5 +1,9 @@
 # Web 4E-3A: Checkpoint 1 — fail-closed HTTP boundary
 
+Historical checkpoint snapshot. [Checkpoint 2B-2](http-authentication-checkpoint-2b-2.md)
+now documents the five authentication HTTP operations added on this foundation;
+the business role policy and legacy identity-attribution deferrals remain.
+
 Implemented: explicit authentication configuration, lifecycle initialization of
 the existing authentication foundation and a server-owned HTTP access gate.
 There is **no browser login, MFA verification, cookie issuance or recovery route**.

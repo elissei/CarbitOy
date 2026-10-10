@@ -1,5 +1,10 @@
 # Web 4E-2 / vaihe 1: tunnistuksen sisäinen perusta
 
+Tämä dokumentti kuvaa sisäisen perustan alkuperäistä vaihetta.
+[Checkpoint 2B-2](http-authentication-checkpoint-2b-2.md) lisää sen päälle
+kirjautumisen, MFA-vahvistuksen ja istunnon HTTP-elinkaaren; rekisteröinti,
+palautus ja selaimen kirjautumisnäkymä jäävät edelleen myöhempään vaiheeseen.
+
 Web 4E-2 toteutti sisäisen tunnistusperustan ilman HTTP-reittejä. Sen päälle
 toteutettu [Web 4E-3A / Checkpoint 1](http-authentication-checkpoint-1.md) suojaa
 nykyiset liiketoimintareitit, HTML:n ja staattiset tiedostot MFA-istunnolla.
