@@ -9,6 +9,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 from webapp.labour_migrations import apply_labour_migrations
+from webapp.business_identity import BusinessActor
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS work_inquiries (
@@ -112,7 +113,7 @@ class WorkRepository:
         *,
         registration: str,
         customer_description: str,
-        actor: str,
+        actor: str | BusinessActor,
         idempotency_key: str,
     ) -> dict[str, Any]:
         work_id = str(uuid4())
@@ -121,9 +122,19 @@ class WorkRepository:
             "registration": registration,
             "customer_description": customer_description,
         }
-        request_json = json.dumps(
-            {**details, "actor": actor}, ensure_ascii=False, sort_keys=True
-        )
+        if isinstance(actor, BusinessActor):
+            attribution = actor.attribution()
+            actor = str(actor.user_id)
+            fingerprint = {**details, "contract": "carbit.create-work.authenticated.v1",
+                           "actor_user_id": actor}
+            details["actor_attribution"] = attribution
+        elif isinstance(actor, str) and actor.strip():
+            # Offline/legacy callers retain their old contract, never an auth
+            # provenance marker. HTTP writes always supply a resolved actor.
+            fingerprint = {**details, "actor": actor}
+        else:
+            raise ValueError("a server actor or explicit legacy label is required")
+        request_json = json.dumps(fingerprint, ensure_ascii=False, sort_keys=True)
         with self._connect() as connection:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -212,7 +223,16 @@ class WorkRepository:
         work_id: str,
         expected_version: int,
         labour: dict[str, str],
+        actor: BusinessActor | None = None,
     ) -> dict[str, Any]:
+        labour = dict(labour)
+        if actor is not None:
+            if not isinstance(actor, BusinessActor):
+                raise ValueError("a server actor snapshot is required")
+            labour["recorded_by"] = str(actor.user_id)
+        details = dict(labour)
+        if actor is not None:
+            details["actor_attribution"] = actor.attribution()
         now = utc_now()
         with self._connect() as connection:
             with connection:
@@ -249,7 +269,7 @@ class WorkRepository:
                     occurred_at=now,
                     event_type="AUTODATA_TYOAIKA_KIRJATTU",
                     actor=labour["recorded_by"],
-                    details=dict(labour),
+                    details=details,
                     work_version=expected_version + 1,
                 )
                 result = self._read_work(connection, work_id)

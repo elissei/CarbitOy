@@ -85,14 +85,12 @@ def open_work(page, registration):
 def fill_labour(page, description="Keksitty Autodata-työ", hours="1.60"):
     page.locator('#labour-form [name="hours"]').fill(hours)
     page.locator('#labour-form [name="work_description"]').fill(description)
-    page.locator('#labour-form [name="recorded_by"]').fill("Testikirjaaja")
 
 
-def fill_inquiry(page, actor="Testikirjaaja"):
+def fill_inquiry(page, description="Keksitty tiedustelu"):
     page.locator("#new-work-button").click()
     page.locator('#new-work-form [name="registration"]').fill("TEST-NEW")
-    page.locator('#new-work-form [name="customer_description"]').fill("Keksitty tiedustelu")
-    page.locator('#new-work-form [name="actor"]').fill(actor)
+    page.locator('#new-work-form [name="customer_description"]').fill(description)
 
 
 def wait_for_held(page, held, key):
@@ -209,9 +207,9 @@ def test_validation_errors_are_finnish_and_text_detail_is_preserved(page, local_
     url, repository = local_app
     work = seed(repository, "TEST-ERROR")
     page.goto(url, wait_until="networkidle")
-    fill_inquiry(page, actor="   ")
+    fill_inquiry(page, description="   ")
     page.locator('#new-work-form button[type="submit"]').click()
-    expect(page.locator("#new-work-error")).to_have_text("Kirjaaja: Kenttä ei voi olla tyhjä.")
+    expect(page.locator("#new-work-error")).to_have_text("Asiakkaan alkuperäinen työkuvaus: Kenttä ei voi olla tyhjä.")
     page.locator('#new-work-form [data-close]').first.click()
     open_work(page, "TEST-ERROR")
     fill_labour(page, hours="0")
@@ -256,6 +254,35 @@ def test_currency_formatting_keeps_string_precision(page, local_app):
     page.goto(local_app[0], wait_until="networkidle")
     formatted = page.evaluate("formatMoney('9007199254740993.01')")
     assert formatted.replace("\u00a0", " ") == "9 007 199 254 740 993,01 €"
+
+
+def test_forms_send_no_actor_fields_and_history_uses_authenticated_snapshot(page, local_app):
+    writes = []
+    page.on("request", lambda request: writes.append(request.post_data_json)
+            if request.method in {"POST", "PUT"} else None)
+    page.goto(local_app[0], wait_until="networkidle")
+    assert page.locator('[name="actor"], [name="recorded_by"]').count() == 0
+    fill_inquiry(page)
+    page.locator('#new-work-form button[type="submit"]').click()
+    expect(page.locator("#detail-registration")).to_have_text("TEST-NEW")
+    fill_labour(page)
+    page.locator('#labour-form button[type="submit"]').click()
+    expect(page.locator("#event-list li")).to_have_count(2)
+    user = local_app.auth_service.inspect_session(local_app.token).user
+    expect(page.locator("#event-list")).to_contain_text(user.display_name)
+    expect(page.locator("#event-list")).to_contain_text(str(user.user_id))
+    expect(page.locator("#event-list")).to_contain_text("kirjautunut käyttäjä")
+    assert len(writes) == 2 and all("actor" not in body and "recorded_by" not in body for body in writes)
+
+
+def test_legacy_uuid_label_is_not_rendered_as_authenticated(page, local_app):
+    label = str(uuid4())
+    work = local_app[1].create_work(registration="TEST-LEGACY", customer_description="Fictional history",
+                                  actor=label, idempotency_key=str(uuid4()))
+    page.goto(local_app[0], wait_until="networkidle")
+    open_work(page, "TEST-LEGACY")
+    expect(page.locator("#event-list")).to_contain_text(label + " (vanha itse ilmoitettu kirjaaja)")
+    assert local_app[1].get_work(work["id"])["events"] == work["events"]
 
 
 def test_csrf_is_lazy_and_cached_across_form_writes(page, local_app):
@@ -354,7 +381,7 @@ def test_rejected_write_invalidates_cache_without_automatic_retry(page, local_ap
     fill_inquiry(page)
     page.locator('#new-work-form button[type="submit"]').click()
     expect(page.locator("#new-work-error")).to_have_text("Fictional security rejection")
-    expect(page.locator('#new-work-form [name="actor"]')).to_have_value("Testikirjaaja")
+    expect(page.locator('#new-work-form [name="customer_description"]')).to_have_value("Keksitty tiedustelu")
     assert len(writes) == 1 and len(bootstraps) == 1
     assert page.evaluate("sessionCsrf === null")
     page.locator('#new-work-form button[type="submit"]').click()

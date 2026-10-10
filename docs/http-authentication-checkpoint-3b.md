@@ -1,5 +1,9 @@
 # Web 4E-3A CP3B: business-write CSRF and browser transport
 
+Historical checkpoint snapshot. [CP3C](http-authentication-checkpoint-3c.md)
+now supplies server-owned UUID attribution, historical name snapshots and the
+internal session-to-workshop identity bridge. CP3B security controls remain.
+
 CP3B extends the existing CP2B session-purpose proof to the two existing
 business writes. It introduces no authentication mechanism, route, schema,
 business identity bridge or pricing change. This is not production-readiness

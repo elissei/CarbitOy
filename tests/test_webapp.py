@@ -6,6 +6,7 @@ import pytest
 from http_auth_support import AuthenticatedTestClient as TestClient
 
 from http_auth_support import create_test_app as create_app
+from webapp.auth_csrf import SESSION_COOKIE
 
 
 def client_for(tmp_path):
@@ -207,9 +208,12 @@ def test_creation_idempotency_survives_restart_and_preserves_original_response(t
     database = tmp_path / "test.db"
     payload = inquiry_payload()
     with TestClient(create_app(database)) as client:
+        token = client.cookies.get(SESSION_COOKIE)
         original = client.post("/api/works", json=payload).json()
         client.put(f"/api/works/{original['id']}/labour", json=labour_payload())
     with TestClient(create_app(database)) as client:
+        # Retry as the same stable user, rather than the new fixture account.
+        client.cookies.set(SESSION_COOKIE, token)
         repeated = client.post("/api/works", json=payload)
         assert repeated.status_code == 201
         assert repeated.json() == original
@@ -224,15 +228,19 @@ def test_creation_idempotency_survives_restart_and_preserves_original_response(t
     {"registration": "TEST-OTHER"},
     {"actor": "Toinen testikirjaaja"},
 ])
-def test_same_key_with_different_content_conflicts_without_changes(tmp_path, changed):
+def test_same_key_content_conflicts_but_ignored_actor_changes_do_not(tmp_path, changed):
     with client_for(tmp_path) as client:
         payload = inquiry_payload()
         original = client.post("/api/works", json=payload).json()
         response = client.post(
             "/api/works", json={**payload, **changed}
         )
-        assert response.status_code == 409
-        assert isinstance(response.json()["detail"], str)
+        if "actor" in changed:
+            assert response.status_code == 201
+            assert response.json() == original
+        else:
+            assert response.status_code == 409
+            assert isinstance(response.json()["detail"], str)
         assert client.get(f"/api/works/{original['id']}").json() == original
         assert len(client.get("/api/works").json()) == 1
 

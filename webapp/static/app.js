@@ -149,7 +149,6 @@ function renderDetail() {
   document.querySelector("#detail-created").textContent = formatDate(work.created_at);
   labourForm.elements.hours.value = work.labour_hours || "";
   labourForm.elements.work_description.value = work.labour_work_description || "";
-  labourForm.elements.recorded_by.value = work.labour_recorded_by || "";
   labourForm.elements.autodata_reference.value = work.autodata_reference || "";
   const price = document.querySelector("#price-summary");
   price.classList.toggle("hidden", !work.total_price);
@@ -170,7 +169,12 @@ function renderDetail() {
     item.innerHTML = "<strong></strong><span></span>";
     item.querySelector("strong").textContent = event.event_type === "TIEDUSTELU_LUOTU"
       ? "Tiedustelu luotu" : "Autodata-työaika kirjattu";
-    item.querySelector("span").textContent = `${formatDate(event.occurred_at)} · ${event.actor}`;
+    const actor = event.details?.actor_attribution;
+    const verified = actor?.version === 1 && actor.provenance === "authenticated_session"
+      && actor.user_id === event.actor && typeof actor.display_name === "string";
+    const label = verified ? `${actor.display_name} · ${actor.user_id} (kirjautunut käyttäjä)`
+      : `${event.actor} (vanha itse ilmoitettu kirjaaja)`;
+    item.querySelector("span").textContent = `${formatDate(event.occurred_at)} · ${label}`;
     return item;
   }));
 }

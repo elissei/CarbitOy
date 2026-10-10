@@ -22,6 +22,7 @@ from domain.models.labour_time import LabourTime
 from domain.models.work_plan import WorkPlan
 from services.labour_planning import approve_labour_plan_adjusted, approve_labour_plan_unchanged
 from webapp.database import IdempotencyConflictError, VersionConflictError, WorkNotFoundError, WorkRepository
+from webapp.business_identity import BusinessActor
 from webapp.labour_models import (
     CoverageStatus, LabourPlanRequestRecord, LabourPlanRevisionRecord,
     LabourReviewDecisionRecord, OriginalWorkTimeRecord, ReviewDecisionStatus,
@@ -39,6 +40,7 @@ class WorkshopPermission(str, Enum):
 class TrustedWorkshopContext:
     employee_id: str
     permissions: frozenset[WorkshopPermission]
+    actor: BusinessActor | None = None
 
     def __post_init__(self):
         if not isinstance(self.employee_id, str) or not self.employee_id.strip():
@@ -47,6 +49,10 @@ class TrustedWorkshopContext:
             not isinstance(permission, WorkshopPermission) for permission in self.permissions
         ):
             raise ValueError("trusted permissions must be an immutable permission set")
+        if self.actor is not None and (
+            not isinstance(self.actor, BusinessActor) or str(self.actor.user_id) != self.employee_id
+        ):
+            raise ValueError("attribution must match the trusted employee UUID")
 
 
 class StaleLabourPlanError(ValueError):
@@ -183,7 +189,27 @@ class LabourPlanService:
             raise StaleLabourPlanError("plan content or review rules changed")
 
     @staticmethod
+    def _request_json(command, context, operation):
+        content = command.model_dump(mode="json", round_trip=True)
+        if context.actor is not None:
+            return _json({"contract": "carbit.workshop.authenticated.v1", "operation": operation,
+                          "actor_user_id": context.employee_id, "command": content})
+        return _json(content)
+
+    @staticmethod
     def _replay(connection, command, context, operation, request_json):
+        if context.actor is not None:
+            # The existing inquiry/operation key scope is retained. A new auth
+            # caller cannot adopt another actor's or an unversioned legacy retry.
+            rows = connection.execute("""
+                SELECT actor_id, request_json, response_json FROM labour_plan_requests
+                WHERE inquiry_id=? AND operation=? AND idempotency_key=?
+            """, (command.inquiry_id, operation, command.idempotency_key)).fetchall()
+            if not rows:
+                return None
+            if len(rows) != 1 or rows[0]["actor_id"] != context.employee_id or rows[0]["request_json"] != request_json:
+                raise IdempotencyConflictError(command.idempotency_key)
+            return LabourOperationResult.model_validate_json(rows[0]["response_json"])
         previous = connection.execute("""
             SELECT request_json, response_json FROM labour_plan_requests
             WHERE inquiry_id=? AND actor_id=? AND operation=? AND idempotency_key=?
@@ -206,6 +232,8 @@ class LabourPlanService:
 
     @staticmethod
     def _append_event(connection, inquiry_id, timestamp, event_type, context, details, version):
+        if context.actor is not None:
+            details = {**details, "actor_attribution": context.actor.attribution()}
         return connection.execute("""
             INSERT INTO work_events (work_id, occurred_at, event_type, actor, details_json, work_version)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -270,7 +298,7 @@ class LabourPlanService:
     def save_plan(self, context: TrustedWorkshopContext, command: SaveLabourPlanCommand) -> LabourOperationResult:
         self._authorize(context, WorkshopPermission.SAVE_LABOUR_PLAN)
         command = SaveLabourPlanCommand.model_validate(command.model_dump(round_trip=True))
-        request_json = _json(command.model_dump(mode="json", round_trip=True))
+        request_json = self._request_json(command, context, "SAVE_PLAN")
         with self.repository._connect() as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             replay = self._replay(connection, command, context, "SAVE_PLAN", request_json)
@@ -375,7 +403,7 @@ class LabourPlanService:
     def approve_plan(self, context: TrustedWorkshopContext, command: ApproveLabourPlanCommand) -> LabourOperationResult:
         self._authorize(context, WorkshopPermission.APPROVE_LABOUR_PLAN)
         command = ApproveLabourPlanCommand.model_validate(command.model_dump(round_trip=True))
-        request_json = _json(command.model_dump(mode="json", round_trip=True))
+        request_json = self._request_json(command, context, "APPROVE_LABOUR")
         with self.repository._connect() as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             replay = self._replay(connection, command, context, "APPROVE_LABOUR", request_json)

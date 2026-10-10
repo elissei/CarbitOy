@@ -56,7 +56,6 @@
             </div>
             <div class="form-grid">
               <label>Työaika (h)<input name="hours" type="number" min="0" step="any" required></label>
-              <label>Kirjaaja<input name="recorded_by" required maxlength="200"></label>
               <label class="wide">Autodatan työn kuvaus<textarea name="work_description" rows="3" required maxlength="2000"></textarea></label>
               <label class="wide">Autodata-viite (valinnainen)<input name="autodata_reference" maxlength="500"></label>
             </div>
@@ -81,7 +80,6 @@
         <div class="dialog-heading"><div><p class="overline">Uusi työ</p><h2>Uusi työtiedustelu</h2></div><button class="icon-button" type="button" data-close aria-label="Sulje">×</button></div>
         <label>Rekisterinumero<input name="registration" required maxlength="20" autocomplete="off"></label>
         <label>Asiakkaan alkuperäinen työkuvaus<textarea name="customer_description" rows="5" required maxlength="4000"></textarea></label>
-        <label>Kirjaaja<input name="actor" required maxlength="200"></label>
         <p class="form-error hidden" id="new-work-error" role="alert"></p>
         <div class="dialog-actions"><button class="secondary" type="button" data-close>Peruuta</button><button class="primary" type="submit">Tallenna tiedustelu</button></div>
       </form>

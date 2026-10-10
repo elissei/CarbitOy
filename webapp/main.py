@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from contextlib import asynccontextmanager
 from decimal import Decimal, InvalidOperation, Overflow
 from pathlib import Path
@@ -24,12 +25,15 @@ from webapp.database import (
     WorkRepository,
 )
 from webapp.auth_crypto import TotpCipher
-from webapp.auth_csrf import CsrfProtector
+from webapp.auth_csrf import CsrfProtector, SESSION_COOKIE
 from webapp.auth_repository import AuthRepository
-from webapp.auth_service import AuthService
+from webapp.auth_service import AuthService, AuthenticationError, PermissionDeniedError
 from webapp.auth_settings import AuthSettings
 from webapp.http_access import HttpAccessGate, validate_route_coverage
 from webapp.http_auth import register_auth_routes
+from webapp.business_identity import BusinessActor
+from webapp.labour_service import WorkshopPermission
+from webapp.workshop_identity import resolve_workshop_context
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -41,12 +45,14 @@ class CreateWorkRequest(BaseModel):
 
     registration: str = Field(min_length=1, max_length=20)
     customer_description: str = Field(min_length=1, max_length=4000)
-    actor: str = Field(min_length=1, max_length=200)
+    actor: str | None = Field(default=None, min_length=1, max_length=200, deprecated=True)
     idempotency_key: UUID
 
     @field_validator("registration", "customer_description", "actor")
     @classmethod
     def strip_required_text(cls, value: str) -> str:
+        if value is None:
+            return value
         value = value.strip()
         if not value:
             raise ValueError("Kenttä ei voi olla tyhjä")
@@ -64,12 +70,14 @@ class RecordLabourRequest(BaseModel):
     version: int = Field(ge=1)
     hours: Decimal = Field(gt=0)
     work_description: str = Field(min_length=1, max_length=2000)
-    recorded_by: str = Field(min_length=1, max_length=200)
+    recorded_by: str | None = Field(default=None, min_length=1, max_length=200, deprecated=True)
     autodata_reference: str | None = Field(default=None, max_length=500)
 
     @field_validator("work_description", "recorded_by")
     @classmethod
     def strip_required_text(cls, value: str) -> str:
+        if value is None:
+            return value
         value = value.strip()
         if not value:
             raise ValueError("Kenttä ei voi olla tyhjä")
@@ -81,6 +89,25 @@ class RecordLabourRequest(BaseModel):
         if value is None:
             return None
         return value.strip() or None
+
+
+def _business_actor(request: Request) -> BusinessActor:
+    """After body validation, resolve current writer identity from the real session."""
+    try:
+        context = resolve_workshop_context(
+            request.app.state.auth_service,
+            request.state.security_cookies.get(SESSION_COOKIE),
+            required_permission=WorkshopPermission.SAVE_LABOUR_PLAN,
+        )
+        if context.actor is None:
+            raise ValueError("missing authenticated attribution")
+        return context.actor
+    except PermissionDeniedError as error:
+        raise HTTPException(status_code=403, detail="Permission denied") from error
+    except AuthenticationError as error:
+        raise HTTPException(status_code=401, detail="Authentication required") from error
+    except (sqlite3.DatabaseError, ValueError, TypeError, KeyError, AttributeError) as error:
+        raise HTTPException(status_code=503, detail="Authentication unavailable") from error
 
 
 def create_app(
@@ -129,11 +156,12 @@ def create_app(
 
     @app.post("/api/works", status_code=status.HTTP_201_CREATED)
     def create_work(payload: CreateWorkRequest, request: Request):
+        actor = _business_actor(request)
         try:
             return request.app.state.repository.create_work(
                 registration=payload.registration,
                 customer_description=payload.customer_description,
-                actor=payload.actor,
+                actor=actor,
                 idempotency_key=str(payload.idempotency_key),
             )
         except IdempotencyConflictError as error:
@@ -154,13 +182,14 @@ def create_app(
 
     @app.put("/api/works/{work_id}/labour")
     def record_labour(work_id: str, payload: RecordLabourRequest, request: Request):
+        actor = _business_actor(request)
         try:
             labour_time = LabourTime(
                 hours=payload.hours,
                 source=LabourTimeSource.MANUAL_AUTODATA,
                 work_description=payload.work_description,
                 autodata_reference=payload.autodata_reference,
-                recorded_by=payload.recorded_by,
+                recorded_by=str(actor.user_id),
             )
             labour_cost = calculate_labour_cost(labour_time)
             net_price, vat_price = split_inclusive_vat(labour_cost.total_price)
@@ -190,6 +219,7 @@ def create_app(
                 work_id=work_id,
                 expected_version=payload.version,
                 labour=snapshot,
+                actor=actor,
             )
         except WorkNotFoundError as error:
             raise HTTPException(status_code=404, detail="Työtä ei löytynyt") from error
