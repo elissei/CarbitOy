@@ -353,7 +353,7 @@ def test_failed_bootstrap_preserves_form_key_and_never_sends_write(page, local_a
     fill_inquiry(page)
     key = page.evaluate("state.creationKey")
     page.locator('#new-work-form button[type="submit"]').click()
-    expect(page.locator("#new-work-error")).to_have_text("Authentication temporarily limited")
+    expect(page.locator("#new-work-error")).to_have_text("Liian monta yritystä. Odota vähintään viisi minuuttia.")
     expect(page.locator('#new-work-form [name="customer_description"]')).to_have_value("Keksitty tiedustelu")
     assert page.evaluate("state.creationKey") == key
     assert len(bootstraps) == 1 and writes == [] and local_app[1].list_works() == []
@@ -384,6 +384,13 @@ def test_rejected_write_invalidates_cache_without_automatic_retry(page, local_ap
     expect(page.locator('#new-work-form [name="customer_description"]')).to_have_value("Keksitty tiedustelu")
     assert len(writes) == 1 and len(bootstraps) == 1
     assert page.evaluate("sessionCsrf === null")
+    if status == 401:
+        # A rejected session locks the UI. Only explicit server confirmation
+        # can restore this same user's draft; no business write is replayed.
+        expect(page.locator("#auth-panel")).to_have_attribute("data-state", "expired")
+        page.locator("#auth-check").click()
+        expect(page.locator("#new-work-dialog")).to_be_visible()
+        assert len(writes) == 1
     page.locator('#new-work-form button[type="submit"]').click()
     expect(page.locator("#detail-registration")).to_have_text("TEST-NEW")
     assert len(writes) == 2 and len(bootstraps) == 2

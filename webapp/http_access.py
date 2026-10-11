@@ -23,6 +23,9 @@ from webapp.http_auth import HttpAuthError, security_cookies
 
 # Every registered route is explicitly classified, including HTML and the mount.
 ROUTE_PERMISSIONS = MappingProxyType({
+    ("/login", "GET"): "public_login",
+    ("/login.js", "GET"): "public_login",
+    ("/login.css", "GET"): "public_login",
     ("/", "GET"): "read",
     ("/static", "MOUNT"): "read",
     ("/api/works", "GET"): "read",
@@ -145,6 +148,10 @@ class HttpAccessGate(BaseHTTPMiddleware):
             self._transport(request, settings)
         except HttpAuthError as error:
             return _error(error.status, error.detail)
+        if permission == "public_login":
+            # Three reviewed file routes only, never a public directory mount.
+            # Configuration, HTTPS/Host/Origin and raw-cookie checks still apply.
+            return await call_next(request)
         if permission is None:
             # Unknown paths/methods can produce only the router's 404/405/redirect.
             return await call_next(request)

@@ -1,5 +1,5 @@
 const state = {
-  works: [], selected: null, selectionEpoch: 0, listEpoch: 0,
+  works: [], listLoaded: false, selected: null, selectionEpoch: 0, listEpoch: 0,
   labourPending: false, createPending: false, creationKey: null
 };
 const list = document.querySelector("#work-list");
@@ -53,10 +53,70 @@ function formatApiError(detail) {
 let sessionCsrf = null;
 let csrfRefresh = null;
 let csrfGeneration = 0;
+let draftDialogOpen = false;
+
+function lockBusiness() {
+  forgetSessionCsrf();
+  state.selectionEpoch += 1;
+  state.listEpoch += 1;
+  draftDialogOpen ||= dialog.open;
+  dialog.close();
+  document.querySelector("#business-shell").hidden = true;
+  document.querySelector("#business-shell").inert = true;
+}
+
+function discardBusiness() {
+  forgetSessionCsrf();
+  state.works = []; state.listLoaded = false; state.selected = null; state.creationKey = null;
+  state.selectionEpoch += 1; state.listEpoch += 1;
+  draftDialogOpen = false;
+  newForm.reset(); labourForm.reset();
+  list.replaceChildren(); count.textContent = "";
+  for (const id of ["detail-registration", "detail-description", "detail-created", "price-summary", "event-list", "session-user", "toast", "new-work-error", "labour-error"]) {
+    document.getElementById(id).replaceChildren();
+  }
+  labourForm.dataset.workId = ""; labourForm.dataset.version = "";
+  detail.classList.add("hidden"); empty.classList.remove("hidden");
+}
+
+async function confirmBusiness(user, sameOwner) {
+  const writer = ["OWNER", "SERVICE_MANAGER"].includes(user.role);
+  document.querySelector("#session-user").textContent = `${user.display_name}${writer ? "" : " · Vain luku"}`;
+  document.querySelector("#new-work-button").hidden = !writer;
+  document.querySelectorAll("[data-open-new]").forEach(button => { button.hidden = !writer; });
+  Array.from(labourForm.elements).forEach(control => { control.disabled = !writer; });
+  labourForm.querySelector("button[type=submit]").disabled = !writer || state.labourPending;
+  const shell = document.querySelector("#business-shell");
+  shell.hidden = false; shell.inert = false;
+  if (sameOwner) {
+    // Do not renderDetail: it would overwrite unsent labour fields and version.
+    if (draftDialogOpen && writer) dialog.showModal();
+    draftDialogOpen = false;
+    if (!state.listLoaded) await loadWorks();
+    return;
+  }
+  await loadWorks();
+}
 
 function forgetSessionCsrf() {
   sessionCsrf = null;
   csrfGeneration += 1;
+}
+
+function cacheSessionProof(body, generation = csrfGeneration) {
+  const fields = typeof body.csrf_token === "string" ? body.csrf_token.split(".") : [];
+  const issued = Number(fields[3]);
+  const expires = Number(fields[4]);
+  const remaining = Math.min(expires * 1000 - Date.now(), (expires - issued) * 1000) - 5000;
+  if (generation !== csrfGeneration || body.state !== "session" || fields.length !== 7
+      || fields[0] !== "v1" || fields[2] !== "session" || body.csrf_token.length > 512
+      || !Number.isSafeInteger(issued) || !Number.isSafeInteger(expires)
+      || expires !== body.expires_at || expires - issued > 600 || remaining <= 0) {
+    throw new Error("Kirjautuminen on vanhentunut. Kirjaudu uudelleen.");
+  }
+  sessionCsrf = { token: body.csrf_token, expires: expires * 1000 - 5000,
+    until: performance.now() + remaining };
+  return sessionCsrf.token;
 }
 
 async function sessionProof() {
@@ -70,41 +130,52 @@ async function sessionProof() {
         headers: { "X-Carbit-Auth": "bootstrap" }
       });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(formatApiError(body.detail));
-      const fields = typeof body.csrf_token === "string" ? body.csrf_token.split(".") : [];
-      const issued = Number(fields[3]);
-      const expires = Number(fields[4]);
-      const remaining = Math.min(expires * 1000 - Date.now(), (expires - issued) * 1000) - 5000;
-      if (generation !== csrfGeneration || body.state !== "session" || fields.length !== 7
-          || fields[0] !== "v1" || fields[2] !== "session" || body.csrf_token.length > 512
-          || !Number.isSafeInteger(issued) || !Number.isSafeInteger(expires)
-          || expires !== body.expires_at || expires - issued > 600 || remaining <= 0) {
+      if (generation !== csrfGeneration) throw new Error("Kirjautumistila muuttui. Tarkista tila.");
+      if (!response.ok) {
+        if (response.status === 401) CarbitAuth.lock();
+        throw new Error(response.status === 429 ? "Liian monta yritystä. Odota vähintään viisi minuuttia."
+          : "Kirjautumisen suojausta ei voitu vahvistaa. Tarkista kirjautumistila tai yritä myöhemmin.");
+      }
+      if (body.state !== "session") {
+        CarbitAuth.lock();
         throw new Error("Kirjautuminen on vanhentunut. Kirjaudu uudelleen.");
       }
-      sessionCsrf = { token: body.csrf_token, expires: expires * 1000 - 5000,
-        until: performance.now() + remaining };
-      return sessionCsrf.token;
+      return cacheSessionProof(body, generation);
     })().finally(() => { csrfRefresh = null; });
   }
   return csrfRefresh;
 }
 
 async function api(path, options = {}) {
+  if (!CarbitAuth.active()) throw new Error("Kirjautuminen on vanhentunut. Kirjaudu uudelleen.");
+  const authEpoch = CarbitAuth.epoch();
+  const requestStartedAt = Date.now();
   const method = (options.method || "GET").toUpperCase();
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
   if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    if (!CarbitAuth.canWrite()) throw new Error("Käyttöoikeus ei riitä. Näkymä on vain lukua varten.");
     headers["X-CSRF-Token"] = await sessionProof();
   }
+  if (authEpoch !== CarbitAuth.epoch() || !CarbitAuth.active()) throw new Error("Kirjautumistila muuttui. Tarkista tila.");
   const response = await fetch(path, {
     ...options,
     credentials: "same-origin", headers
   });
+  if (authEpoch !== CarbitAuth.epoch() || !CarbitAuth.active()) throw new Error("Kirjautumistila muuttui. Tarkista tila.");
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) forgetSessionCsrf();
     const body = await response.json().catch(() => ({}));
+    if (authEpoch !== CarbitAuth.epoch()) throw new Error("Kirjautumistila muuttui. Tarkista tila.");
+    if (response.status === 401) CarbitAuth.lock();
+    if (response.status === 403 && body.detail === "Permission denied") {
+      CarbitAuth.lock("denied", "Käyttöoikeus ei riitä. Tarkista nykyinen kirjautumistila.");
+    }
     throw new Error(formatApiError(body.detail));
   }
-  return response.json();
+  const body = await response.json();
+  if (authEpoch !== CarbitAuth.epoch() || !CarbitAuth.active()) throw new Error("Kirjautumistila muuttui. Tarkista tila.");
+  CarbitAuth.activity(requestStartedAt);
+  return body;
 }
 
 let toastTimer;
@@ -142,7 +213,7 @@ function renderDetail() {
   document.querySelector("#labour-error").classList.add("hidden");
   labourForm.dataset.workId = work?.id || "";
   labourForm.dataset.version = work?.version || "";
-  labourForm.querySelector("button[type=submit]").disabled = state.labourPending;
+  labourForm.querySelector("button[type=submit]").disabled = state.labourPending || !CarbitAuth.canWrite();
   if (!work) return;
   document.querySelector("#detail-registration").textContent = work.registration;
   document.querySelector("#detail-description").textContent = work.customer_description;
@@ -184,6 +255,7 @@ async function loadWorks() {
   const works = await api("/api/works");
   if (epoch !== state.listEpoch) return;
   state.works = works;
+  state.listLoaded = true;
   renderList();
 }
 
@@ -204,7 +276,7 @@ async function openWork(id) {
 }
 
 function openNewDialog() {
-  if (state.createPending) return;
+  if (state.createPending || !CarbitAuth.canWrite()) return;
   newForm.reset();
   state.creationKey = crypto.randomUUID();
   document.querySelector("#new-work-error").classList.add("hidden");
@@ -223,7 +295,7 @@ dialog.addEventListener("cancel", (event) => {
 
 newForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (state.createPending) return;
+  if (state.createPending || !CarbitAuth.canWrite()) return;
   const error = document.querySelector("#new-work-error");
   error.classList.add("hidden");
   const data = Object.fromEntries(new FormData(newForm));
@@ -251,7 +323,7 @@ newForm.addEventListener("submit", async (event) => {
 labourForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const work = state.selected;
-  if (state.labourPending || !work || labourForm.dataset.workId !== work.id
+  if (!CarbitAuth.canWrite() || state.labourPending || !work || labourForm.dataset.workId !== work.id
       || Number(labourForm.dataset.version) !== work.version) return;
   const epoch = state.selectionEpoch;
   const data = Object.fromEntries(new FormData(labourForm));
@@ -277,8 +349,8 @@ labourForm.addEventListener("submit", async (event) => {
     }
   } finally {
     state.labourPending = false;
-    labourForm.querySelector("button[type=submit]").disabled = false;
+    labourForm.querySelector("button[type=submit]").disabled = !CarbitAuth.canWrite();
   }
 });
 
-loadWorks().catch((problem) => showToast(problem.message));
+CarbitAuth.start({ lock: lockBusiness, discard: discardBusiness, confirm: confirmBusiness, sessionProof, cacheProof: cacheSessionProof });

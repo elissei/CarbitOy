@@ -146,6 +146,27 @@ def create_app(
     register_auth_routes(app)
     app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
+    login_headers = {
+        "Cache-Control": "no-store", "Pragma": "no-cache", "Expires": "0",
+        "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
+        "X-Frame-Options": "DENY",
+        "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; "
+        "connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'",
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    }
+
+    @app.get("/login", include_in_schema=False)
+    def login_page() -> FileResponse:
+        return FileResponse(BASE_DIR / "browser_auth" / "login.html", media_type="text/html", headers=login_headers)
+
+    @app.get("/login.js", include_in_schema=False)
+    def login_script() -> FileResponse:
+        return FileResponse(BASE_DIR / "browser_auth" / "login.js", media_type="text/javascript", headers=login_headers)
+
+    @app.get("/login.css", include_in_schema=False)
+    def login_style() -> FileResponse:
+        return FileResponse(BASE_DIR / "browser_auth" / "login.css", media_type="text/css", headers=login_headers)
+
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
         return FileResponse(BASE_DIR / "static" / "index.html")

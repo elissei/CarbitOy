@@ -5,15 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Carbit työjono</title>
     <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/login.css">
+    <script src="/login.js" defer></script>
     <script src="/static/app.js" defer></script>
   </head>
   <body>
+    <main id="auth-panel" hidden aria-label="Carbit-kirjautuminen"></main>
+    <div id="business-shell" hidden inert>
     <header class="topbar">
       <a class="brand" href="/" aria-label="Carbit työjonon etusivu">
         <span class="brand-mark">C</span>
         <span>Carbit <small>Työjono</small></span>
       </a>
-      <button class="primary compact" id="new-work-button" type="button">Uusi tiedustelu</button>
+      <div class="session-controls"><span id="session-user"></span><button class="secondary" id="logout-button" type="button">Kirjaudu ulos</button><button class="primary compact" id="new-work-button" type="button">Uusi tiedustelu</button></div>
     </header>
 
     <main class="shell">
@@ -85,5 +89,6 @@
       </form>
     </dialog>
     <div id="toast" class="toast hidden" role="status"></div>
+    </div>
   </body>
 </html>

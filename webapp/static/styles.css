@@ -15,6 +15,8 @@
   font-size: 16px;
 }
 * { box-sizing: border-box; }
+#business-shell[hidden] { display: none; }
+.session-controls { display: flex; align-items: center; gap: 12px; font-size: 13px; }
 body { margin: 0; min-height: 100vh; background: var(--canvas); color: var(--ink); }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
@@ -95,3 +97,4 @@ button:disabled { cursor: wait; opacity: .55; }
   .form-heading, .form-actions { align-items: flex-start; flex-direction: column; }
   .form-actions .primary { width: 100%; }
 }
+@media (max-width: 700px) { .topbar { height: auto; min-height: 72px; padding: 16px; gap: 12px; flex-wrap: wrap; } .session-controls { flex-wrap: wrap; } }
