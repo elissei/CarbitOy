@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/static/styles.css">
     <link rel="stylesheet" href="/login.css">
     <script src="/login.js" defer></script>
+    <script src="/static/inquiry_drafts.js" defer></script>
     <script src="/static/app.js" defer></script>
   </head>
   <body>
@@ -30,6 +31,13 @@
           <span id="work-count" class="count"></span>
         </div>
         <div id="work-list" class="work-list" aria-live="polite"></div>
+        <section id="inquiry-drafts" class="inquiry-drafts" aria-labelledby="draft-list-title" hidden>
+          <h2 id="draft-list-title">Omat tiedusteluluonnokset</h2>
+          <p class="notice">Käsin tallennetut keskeneräiset tiedustelut. Ei automaattista tallennusta.</p>
+          <button id="draft-list-refresh" class="secondary" type="button">Näytä / päivitä luonnokset</button>
+          <p id="draft-list-message" class="notice" role="status"></p>
+          <div id="draft-list" class="work-list"></div>
+        </section>
       </section>
 
       <section class="detail-panel" id="detail-panel" aria-live="polite">
@@ -85,6 +93,15 @@
         <label>Rekisterinumero<input name="registration" required maxlength="20" autocomplete="off"></label>
         <label>Asiakkaan alkuperäinen työkuvaus<textarea name="customer_description" rows="5" required maxlength="4000"></textarea></label>
         <p class="form-error hidden" id="new-work-error" role="alert"></p>
+        <section id="draft-controls" aria-label="Tiedusteluluonnoksen tallennus">
+          <p id="draft-message" class="notice" role="status" aria-live="polite"></p>
+          <p id="draft-expiry" class="notice"></p>
+          <div class="draft-actions">
+            <button id="draft-save" class="secondary" type="button">Tallenna luonnos</button>
+            <button id="draft-retry" class="secondary" type="button" hidden>Uusi sama tallennus</button>
+            <button id="draft-reload" class="secondary" type="button" hidden>Avaa palvelimen versio</button>
+          </div>
+        </section>
         <div class="dialog-actions"><button class="secondary" type="button" data-close>Peruuta</button><button class="primary" type="submit">Tallenna tiedustelu</button></div>
       </form>
     </dialog>

@@ -9,6 +9,9 @@ const empty = document.querySelector("#empty-state");
 const dialog = document.querySelector("#new-work-dialog");
 const newForm = document.querySelector("#new-work-form");
 const labourForm = document.querySelector("#labour-form");
+const inquiryDrafts = CarbitInquiryDrafts({
+  api, form: newForm, dialog, workBusy: () => state.createPending
+});
 const moneyFormatter = new Intl.NumberFormat("fi-FI", {
   style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2
 });
@@ -57,6 +60,7 @@ let draftDialogOpen = false;
 
 function lockBusiness() {
   forgetSessionCsrf();
+  inquiryDrafts.lock();
   state.selectionEpoch += 1;
   state.listEpoch += 1;
   draftDialogOpen ||= dialog.open;
@@ -71,6 +75,7 @@ function discardBusiness() {
   state.selectionEpoch += 1; state.listEpoch += 1;
   draftDialogOpen = false;
   newForm.reset(); labourForm.reset();
+  inquiryDrafts.discard();
   list.replaceChildren(); count.textContent = "";
   for (const id of ["detail-registration", "detail-description", "detail-created", "price-summary", "event-list", "session-user", "toast", "new-work-error", "labour-error"]) {
     document.getElementById(id).replaceChildren();
@@ -86,6 +91,7 @@ async function confirmBusiness(user, sameOwner) {
   document.querySelectorAll("[data-open-new]").forEach(button => { button.hidden = !writer; });
   Array.from(labourForm.elements).forEach(control => { control.disabled = !writer; });
   labourForm.querySelector("button[type=submit]").disabled = !writer || state.labourPending;
+  inquiryDrafts.render();
   const shell = document.querySelector("#business-shell");
   shell.hidden = false; shell.inert = false;
   if (sameOwner) {
@@ -173,7 +179,9 @@ async function api(path, options = {}) {
     if (response.status === 403 && body.detail === "Permission denied") {
       CarbitAuth.lock("denied", "Käyttöoikeus ei riitä. Tarkista nykyinen kirjautumistila.");
     }
-    throw new Error(formatApiError(body.detail));
+    const problem = new Error(formatApiError(body.detail));
+    problem.status = response.status;
+    throw problem;
   }
   const body = await response.json();
   if (authEpoch !== CarbitAuth.epoch() || !CarbitAuth.active()) throw new Error("Kirjautumistila muuttui. Tarkista tila.");
@@ -280,7 +288,7 @@ async function openWork(id) {
 
 function openNewDialog() {
   if (state.createPending || !CarbitAuth.canWrite()) return;
-  newForm.reset();
+  if (!inquiryDrafts.startNew()) return;
   state.creationKey = crypto.randomUUID();
   document.querySelector("#new-work-error").classList.add("hidden");
   dialog.showModal();
@@ -290,15 +298,15 @@ function openNewDialog() {
 document.querySelector("#new-work-button").addEventListener("click", openNewDialog);
 document.querySelectorAll("[data-open-new]").forEach((button) => button.addEventListener("click", openNewDialog));
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => {
-  if (!state.createPending) dialog.close();
+  if (!state.createPending && !inquiryDrafts.busy()) dialog.close();
 }));
 dialog.addEventListener("cancel", (event) => {
-  if (state.createPending) event.preventDefault();
+  if (state.createPending || inquiryDrafts.busy()) event.preventDefault();
 });
 
 newForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (state.createPending || !CarbitAuth.canWrite()) return;
+  if (state.createPending || !CarbitAuth.canWrite() || !inquiryDrafts.canSubmit()) return;
   const error = document.querySelector("#new-work-error");
   error.classList.add("hidden");
   const data = Object.fromEntries(new FormData(newForm));
@@ -311,6 +319,7 @@ newForm.addEventListener("submit", async (event) => {
     dialog.close();
     state.creationKey = null;
     newForm.reset();
+    inquiryDrafts.submitted();
     showToast("Tiedustelu tallennettiin.");
     if (epoch === state.selectionEpoch) await openWork(created.id);
     loadWorks().catch(() => showToast("Tiedustelu tallennettiin, mutta työlistan päivitys epäonnistui."));
@@ -320,6 +329,7 @@ newForm.addEventListener("submit", async (event) => {
   } finally {
     state.createPending = false;
     Array.from(newForm.elements).forEach((control) => { control.disabled = false; });
+    inquiryDrafts.render();
   }
 });
 

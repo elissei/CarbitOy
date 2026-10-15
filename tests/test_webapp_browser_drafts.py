@@ -1,0 +1,649 @@
+"""Manual inquiry drafts through Chromium, real HTTPS/auth/CSRF and disposable SQLite."""
+
+import json
+import socket
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
+
+import pytest
+import uvicorn
+from playwright.sync_api import expect
+
+from http_auth_support import grant_session, local_tls_files, settings_for
+from test_webapp_browser import LocalApp, browser, page
+from test_webapp_browser_auth import password, mfa, user_for
+from webapp.auth_models import SessionCookiePolicy, UserRole
+from webapp.draft_keys import DraftKeyring
+from webapp.draft_settings import DraftApiSettings
+from webapp.main import create_app
+from workshop_support import seed_test_scope
+
+
+@pytest.fixture
+def local_app(tmp_path, request):
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    url = f"https://127.0.0.1:{listener.getsockname()[1]}"
+    enabled = getattr(request, "param", True)
+    options = {"draft_settings": DraftApiSettings(enabled=True, keyring=DraftKeyring(
+        active_key_id="fictional-browser", keys={"fictional-browser": bytes(range(32))},
+    ))} if enabled else {}  # Disabled test exercises the real absent-setting default.
+    app = create_app(tmp_path / "business.db", auth_settings=settings_for(tmp_path / "auth.db", url), **options)
+    cert, key = local_tls_files(tmp_path)
+    server = uvicorn.Server(uvicorn.Config(app, log_level="critical", proxy_headers=False,
+        ssl_certfile=str(cert), ssl_keyfile=str(key)))
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        while not server.started:
+            if not thread.is_alive() or time.monotonic() > deadline:
+                raise RuntimeError("Isolated HTTPS app did not start")
+            threading.Event().wait(0.01)
+        seed_test_scope(app.state.repository)
+        grant = grant_session(app.state.auth_service)
+        fixture = LocalApp(url, app.state.repository, grant.token.get_secret_value(), app.state.auth_service)
+        fixture.app = app
+        yield fixture
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+        listener.close()
+
+
+def form(tab, name):
+    return tab.locator(f'#new-work-form [name="{name}"]')
+
+
+def start(tab, app, description="Keskeneräinen fiktiivinen tiedustelu", registration=""):
+    tab.goto(app[0], wait_until="networkidle")
+    tab.locator("#new-work-button").click()
+    form(tab, "registration").fill(registration)
+    form(tab, "customer_description").fill(description)
+
+
+def save(tab):
+    with tab.expect_response(lambda r: "/api/drafts" in r.url and r.request.method in ("POST", "PUT")) as response:
+        tab.locator("#draft-save").click()
+    assert response.value.ok, response.value.text()
+    expect(tab.locator("#draft-message")).to_contain_text("Luonnos tallennettu.")
+    return response.value.json()["draft_id"]
+
+
+def close(tab):
+    tab.locator('#new-work-form [data-close]').last.click()
+
+
+def open_saved(tab, draft_id):
+    if tab.locator("#new-work-dialog").evaluate("d => d.open"):
+        close(tab)
+    with tab.expect_response(lambda r: "/api/drafts?limit=100" in r.url):
+        tab.locator("#draft-list-refresh").click()
+    tab.locator(f'[data-draft-id="{draft_id}"]').click()
+    expect(tab.locator("#draft-message")).to_contain_text("Palvelimen luonnos avattu")
+
+
+def stored(app, draft_id):
+    with app[1]._connect() as connection:
+        row = connection.execute("SELECT payload_json,revision,expires_at FROM draft_contents WHERE draft_id=?", (draft_id,)).fetchone()
+    return None if row is None else (json.loads(row[0]), row[1], row[2])
+
+
+def counts(app):
+    with app[1]._connect() as connection:
+        return tuple(connection.execute("SELECT count(*) FROM " + name).fetchone()[0]
+                     for name in ("draft_registry", "work_inquiries"))
+
+
+def mutation(tab, path, method, body):
+    # Auxiliary competing operation still passes through the real API/CSRF/DB chain.
+    return tab.evaluate("async ({path,method,body}) => api(path,{method,body:JSON.stringify(body)})",
+                        {"path": path, "method": method, "body": body})
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_manual_create_list_open_update_reload_and_real_relogin(page, local_app, width, tmp_path):
+    page.set_viewport_size({"width": width, "height": 900})
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    start(page, local_app)
+    # Empty required final-inquiry registration must not block a draft.
+    draft_id = save(page)
+    assert counts(local_app) == (1, 0)
+    expect(page.locator('#new-work-form button[type="submit"]')).to_be_disabled()
+    page.reload(wait_until="networkidle")
+    open_saved(page, draft_id)
+    expect(form(page, "registration")).to_have_value("")
+    expect(form(page, "customer_description")).to_have_value("Keskeneräinen fiktiivinen tiedustelu")
+    form(page, "customer_description").fill("Muokattu fiktiivinen kuvaus")
+    assert save(page) == draft_id
+    assert stored(local_app, draft_id)[0]["customer_description"] == "Muokattu fiktiivinen kuvaus"
+    assert stored(local_app, draft_id)[1] == 2
+    close(page)
+    user = user_for(local_app)
+    page.locator("#logout-button").click()
+    expect(page.locator("#business-shell")).to_be_hidden()
+    assert form(page, "customer_description").input_value() == ""
+    assert page.locator("#draft-list").inner_text() == ""
+    local_app.auth_service.clock = lambda: datetime.now(timezone.utc) + timedelta(seconds=60)
+    page.locator("#auth-check").click()
+    password(page, local_app, user)
+    mfa(page, local_app, user)
+    open_saved(page, draft_id)
+    expect(form(page, "customer_description")).to_have_value("Muokattu fiktiivinen kuvaus")
+    assert page.evaluate("localStorage.length === 0 && sessionStorage.length === 0")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(tmp_path / f"manual-draft-{width}.png"), full_page=True)
+    assert counts(local_app) == (1, 0)
+    assert errors == []
+
+
+def test_two_tabs_conflict_preserves_loser_and_requires_explicit_server_open(page, local_app):
+    start(page, local_app, registration="TEST-RACE")
+    draft_id = save(page)
+    other = page.context.new_page()
+    try:
+        other.goto(local_app[0], wait_until="networkidle")
+        open_saved(other, draft_id)
+        form(page, "customer_description").fill("Ensimmäinen voittaja")
+        save(page)
+        form(other, "customer_description").fill("Toisen välilehden oma teksti")
+        other.locator("#draft-save").click()
+        expect(other.locator("#draft-message")).to_contain_text("Versioristiriita")
+        expect(form(other, "customer_description")).to_have_value("Toisen välilehden oma teksti")
+        expect(other.locator("#draft-save")).to_be_disabled()
+        assert stored(local_app, draft_id)[0]["customer_description"] == "Ensimmäinen voittaja"
+        other.once("dialog", lambda dialog: dialog.dismiss())
+        other.locator("#draft-reload").click()
+        expect(form(other, "customer_description")).to_have_value("Toisen välilehden oma teksti")
+        other.once("dialog", lambda dialog: dialog.accept())
+        other.locator("#draft-reload").click()
+        expect(form(other, "customer_description")).to_have_value("Ensimmäinen voittaja")
+        form(other, "customer_description").fill("Tietoisesti uusi muutos")
+        save(other)
+        assert stored(local_app, draft_id)[1] == 3
+        assert counts(local_app) == (1, 0)
+    finally:
+        other.close()
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT"])
+def test_lost_committed_response_retries_exact_envelope_and_keeps_later_edits(page, local_app, method):
+    start(page, local_app)
+    original_id = save(page) if method == "PUT" else None
+    form(page, "customer_description").fill("Alkuperäisen pyynnön teksti")
+    requests = []
+
+    def lose_response(route):
+        if route.request.method != method:
+            route.continue_()
+            return
+        requests.append(route.request.post_data_json)
+        response = route.fetch()
+        assert response.ok
+        route.abort("failed")  # Real server committed; only delivery is lost.
+
+    page.route("**/api/drafts**", lose_response)
+    page.locator("#draft-save").click()
+    expect(page.locator("#draft-message")).to_contain_text("tulos jäi epäselväksi")
+    assert counts(local_app) == (1, 0)
+    form(page, "customer_description").fill("Myöhempi vielä tallentamaton teksti")
+    page.unroute("**/api/drafts**", lose_response)
+    with page.expect_response(lambda r: r.request.method == method and "/api/drafts" in r.url) as response:
+        page.locator("#draft-retry").click()
+    expect(page.locator("#draft-message")).to_contain_text("Luonnos tallennettu.")
+    assert response.value.request.post_data_json == requests[0]
+    draft_id = response.value.json()["draft_id"]
+    assert original_id is None or original_id == draft_id
+    expect(form(page, "customer_description")).to_have_value("Myöhempi vielä tallentamaton teksti")
+    assert stored(local_app, draft_id)[0]["customer_description"] == "Alkuperäisen pyynnön teksti"
+    save(page)
+    assert stored(local_app, draft_id)[0]["customer_description"] == "Myöhempi vielä tallentamaton teksti"
+    assert counts(local_app) == (1, 0)
+
+
+def test_real_storage_failure_rolls_back_and_explicit_retry_recovers(page, local_app, monkeypatch):
+    start(page, local_app)
+    draft_id = save(page)
+    before = stored(local_app, draft_id)
+    form(page, "customer_description").fill("Tietokantavirheessä säilyvä teksti")
+    import sqlite3
+    repository = local_app.app.state.draft_service.repository
+    original = repository._record
+
+    def fail(*args, **kwargs):
+        raise sqlite3.OperationalError("Synthetic isolated storage outage")
+
+    # Fail after the content UPDATE, inside the real business transaction.
+    monkeypatch.setattr(repository, "_record", fail)
+    page.locator("#draft-save").click()
+    expect(page.locator("#draft-message")).to_contain_text("poissa käytöstä")
+    expect(form(page, "customer_description")).to_have_value("Tietokantavirheessä säilyvä teksti")
+    assert stored(local_app, draft_id) == before
+    monkeypatch.setattr(repository, "_record", original)
+    page.locator("#draft-retry").click()
+    expect(page.locator("#draft-message")).to_contain_text("Luonnos tallennettu.")
+    assert stored(local_app, draft_id)[1] == before[1] + 1
+
+
+def test_switching_drafts_requires_choice_and_late_save_does_not_replace_input(page, local_app):
+    start(page, local_app, "Ensimmäinen", "TEST-A")
+    first = save(page)
+    close(page)
+    page.locator("#new-work-button").click()
+    form(page, "customer_description").fill("Toinen")
+    second = save(page)
+    form(page, "customer_description").fill("Säilytä oma kirjoitus")
+    page.once("dialog", lambda dialog: dialog.dismiss())
+    open_saved_attempt(page, first)
+    expect(form(page, "customer_description")).to_have_value("Säilytä oma kirjoitus")
+    page.once("dialog", lambda dialog: dialog.accept())
+    page.locator(f'[data-draft-id="{first}"]').click()
+    expect(form(page, "customer_description")).to_have_value("Ensimmäinen")
+    held = []
+
+    def hold(route):
+        if route.request.method == "PUT":
+            held.append((route, route.fetch()))
+            page.evaluate("window.draftResponseHeld = true")
+        else:
+            route.continue_()
+
+    page.route("**/api/drafts/**", hold)
+    form(page, "customer_description").fill("Lähetetty teksti")
+    page.locator("#draft-save").click()
+    page.wait_for_function("window.draftResponseHeld === true")
+    # Event-driven browser request delivery, not a sleep-based server race.
+    expect(page.locator("#draft-save")).to_be_disabled()
+    form(page, "customer_description").fill("Kirjoitettu odotuksen aikana")
+    assert len(held) == 1
+    held[0][0].fulfill(response=held[0][1])
+    expect(page.locator("#draft-message")).to_contain_text("Luonnos tallennettu.")
+    expect(form(page, "customer_description")).to_have_value("Kirjoitettu odotuksen aikana")
+    assert stored(local_app, first)[0]["customer_description"] == "Lähetetty teksti"
+    assert stored(local_app, second)[0]["customer_description"] == "Toinen"
+
+
+@pytest.mark.parametrize("ending", ["discard", "expiry"])
+def test_ended_draft_preserves_local_text_and_does_not_create_replacement(page, local_app, monkeypatch, ending):
+    from contextlib import nullcontext
+    from test_webapp_draft_service import business_clock
+
+    start(page, local_app)
+    draft_id = save(page)
+    expires = stored(local_app, draft_id)[2]
+    if ending == "discard":
+        mutation(page, f"/api/drafts/{draft_id}/discard", "POST", {"request_id": str(uuid4()), "expected_revision": 1})
+    clock = business_clock(local_app[1], monkeypatch, [expires]) if ending == "expiry" else nullcontext()
+    with clock:
+        form(page, "customer_description").fill("Päättymisen jälkeen oma teksti")
+        page.locator("#draft-save").click()
+        expect(page.locator("#draft-message")).to_contain_text("Luonnos ei ole saatavilla")
+        expect(form(page, "customer_description")).to_have_value("Päättymisen jälkeen oma teksti")
+        expect(page.locator("#draft-save")).to_be_disabled()
+        assert counts(local_app) == (1, 0)
+        response = page.request.get(local_app[0] + "/api/drafts/" + draft_id)
+        assert response.status == 404
+
+
+def test_missing_null_fields_and_unchanged_save_keep_revision_and_expiry(page, local_app):
+    page.goto(local_app[0], wait_until="networkidle")
+    ack = mutation(page, "/api/drafts", "POST", {"draft_type": "WORK_INQUIRY", "request_id": str(uuid4()),
+        "payload": {"customer_description": None}})
+    draft_id = ack["draft_id"]
+    before = stored(local_app, draft_id)
+    open_saved(page, draft_id)
+    save(page)
+    assert stored(local_app, draft_id) == before
+    assert before[0] == {"customer_description": None}
+
+
+def test_list_filters_labour_and_html_is_inert(page, local_app):
+    start(page, local_app, "<img src=x onerror=alert(1)>", "TEST-TEXT")
+    inquiry_id = save(page)
+    work = mutation(page, "/api/works", "POST", {"registration": "TEST-WORK", "customer_description": "Fiktiivinen työ",
+        "idempotency_key": str(uuid4())})
+    labour = mutation(page, "/api/drafts", "POST", {"draft_type": "LABOUR_ENTRY", "request_id": str(uuid4()),
+        "work_id": work["id"], "original_work_version": work["version"], "payload": {"hours": "kesken"}})
+    close(page)
+    page.locator("#draft-list-refresh").click()
+    expect(page.locator(".draft-row")).to_have_count(1)
+    expect(page.locator(".draft-row")).to_contain_text("<img src=x onerror=alert(1)>")
+    assert page.locator("#draft-list img").count() == 0
+    assert page.locator(f'[data-draft-id="{labour["draft_id"]}"]').count() == 0
+    assert page.locator(f'[data-draft-id="{inquiry_id}"]').count() == 1
+
+
+def test_late_committed_response_after_logout_cannot_restore_private_content(page, local_app):
+    start(page, local_app, "Uloskirjautumisen yksityinen teksti")
+    held = []
+
+    def hold(route):
+        if route.request.method == "POST":
+            held.append((route, route.fetch()))
+            page.evaluate("window.draftResponseHeld = true")
+        else:
+            route.continue_()
+
+    page.route("**/api/drafts", hold)
+    page.locator("#draft-save").click()
+    page.wait_for_function("window.draftResponseHeld === true")
+    # Logout is outside the modal; exercise the real handler after a programmatic click.
+    page.locator("#logout-button").evaluate("button => button.click()")
+    expect(page.locator("#business-shell")).to_be_hidden()
+    assert form(page, "customer_description").input_value() == ""
+    held[0][0].fulfill(response=held[0][1])
+    # Roundtrip makes stale promise handlers settle without a time-based sleep.
+    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    assert form(page, "customer_description").input_value() == ""
+    assert "Uloskirjautumisen yksityinen teksti" not in page.locator("body").inner_text()
+    assert counts(local_app) == (1, 0)
+
+
+def open_saved_attempt(tab, draft_id):
+    close(tab)
+    tab.locator("#draft-list-refresh").click()
+    tab.locator(f'[data-draft-id="{draft_id}"]').click()
+
+
+@pytest.mark.parametrize("local_app", [False], indirect=True)
+def test_real_default_disabled_is_understandable_and_existing_submit_still_works(page, local_app):
+    start(page, local_app, registration="TEST-LEGACY")
+    page.locator("#draft-save").click()
+    expect(page.locator("#draft-message")).to_contain_text("Luonnospalvelu ei ole käytössä")
+    expect(form(page, "customer_description")).to_have_value("Keskeneräinen fiktiivinen tiedustelu")
+    assert counts(local_app) == (0, 0)
+    close(page)
+    page.locator("#draft-list-refresh").click()
+    expect(page.locator("#draft-list-message")).to_contain_text("Luonnospalvelu ei ole käytössä")
+    page.once("dialog", lambda dialog: dialog.accept())
+    page.locator("#new-work-button").click()
+    form(page, "registration").fill("TEST-SUBMIT")
+    form(page, "customer_description").fill("Tavallinen tiedustelu edelleen toimii")
+    page.locator('#new-work-form button[type="submit"]').click()
+    expect(page.locator("#detail-registration")).to_have_text("TEST-SUBMIT")
+    assert counts(local_app) == (0, 1)
+
+
+@pytest.mark.parametrize("role", [UserRole.OWNER, UserRole.SERVICE_MANAGER, UserRole.IT_ADMIN])
+def test_user_change_clears_private_editor_list_and_enforces_roles(page, local_app, role):
+    start(page, local_app, "Edellisen käyttäjän yksityinen teksti", "TEST-PRIVATE")
+    draft_id = save(page)
+    close(page)
+    page.locator("#draft-list-refresh").click()
+    expect(page.locator(".draft-row")).to_have_count(1)
+    other = grant_session(local_app.auth_service, role=role)
+    page.context.add_cookies([{"name": SessionCookiePolicy().name, "value": other.token.get_secret_value(),
+        "url": local_app[0], "secure": True, "httpOnly": True, "sameSite": "Strict"}])
+    page.evaluate("CarbitAuth.lock()")
+    page.locator("#auth-check").click()
+    expect(page.locator("#business-shell")).to_be_visible()
+    assert form(page, "customer_description").input_value() == ""
+    assert page.locator("#draft-list").inner_text() == ""
+    assert "Edellisen käyttäjän" not in page.locator("body").inner_text()
+    response = page.request.get(local_app[0] + "/api/drafts/" + draft_id)
+    assert response.status == (403 if role == UserRole.IT_ADMIN else 404)
+    if role == UserRole.IT_ADMIN:
+        expect(page.locator("#inquiry-drafts")).to_be_hidden()
+        expect(page.locator("#new-work-button")).to_be_hidden()
+    else:
+        page.locator("#draft-list-refresh").click()
+        expect(page.locator("#draft-list-message")).to_contain_text("Ei omia")
+        page.locator("#new-work-button").click()
+        form(page, "customer_description").fill("Uuden käyttäjän oma luonnos")
+        save(page)
+        assert counts(local_app) == (2, 0)
+
+
+def test_historical_receipt_after_discard_never_recreates_content(page, local_app):
+    start(page, local_app)
+    held = []
+
+    def lose(route):
+        if route.request.method == "POST":
+            response = route.fetch()
+            held.append(response.json())
+            route.abort("failed")
+        else:
+            route.continue_()
+
+    page.route("**/api/drafts", lose)
+    page.locator("#draft-save").click()
+    expect(page.locator("#draft-message")).to_contain_text("tulos jäi epäselväksi")
+    page.unroute("**/api/drafts", lose)
+    draft_id = held[0]["draft_id"]
+    mutation(page, f"/api/drafts/{draft_id}/discard", "POST", {"request_id": str(uuid4()), "expected_revision": 1})
+    page.locator("#draft-retry").click()
+    expect(page.locator("#draft-message")).to_contain_text("luonnos on jo päättynyt")
+    expect(form(page, "customer_description")).to_have_value("Keskeneräinen fiktiivinen tiedustelu")
+    assert stored(local_app, draft_id) is None
+    assert counts(local_app) == (1, 0)
+    expect(page.locator("#draft-save")).to_be_disabled()
+
+
+def test_historical_ack_does_not_adopt_new_revision_for_stale_local_text(page, local_app):
+    start(page, local_app)
+    receipts = []
+
+    def lose(route):
+        if route.request.method == "POST":
+            response = route.fetch()
+            receipts.append(response.json())
+            route.abort("failed")
+        else:
+            route.continue_()
+
+    page.route("**/api/drafts", lose)
+    page.locator("#draft-save").click()
+    expect(page.locator("#draft-message")).to_contain_text("tulos jäi epäselväksi")
+    page.unroute("**/api/drafts", lose)
+    draft_id = receipts[0]["draft_id"]
+    mutation(page, f"/api/drafts/{draft_id}", "PUT", {"request_id": str(uuid4()), "expected_revision": 1,
+        "payload": {"customer_description": "Toisessa välilehdessä jo tallennettu"}})
+    page.locator("#draft-retry").click()
+    expect(page.locator("#draft-message")).to_contain_text("Palvelimella on toinen sisältöversio")
+    expect(form(page, "customer_description")).to_have_value("Keskeneräinen fiktiivinen tiedustelu")
+    expect(page.locator("#draft-save")).to_be_disabled()
+    assert stored(local_app, draft_id)[1] == 2
+    assert stored(local_app, draft_id)[0]["customer_description"] == "Toisessa välilehdessä jo tallennettu"
+
+
+@pytest.mark.parametrize("failure", ["discard", "service", "network"])
+def test_failed_open_is_visible_outside_closed_dialog_and_preserves_form(page, local_app, monkeypatch, failure):
+    start(page, local_app, "Avausvirheessä säilyvä teksti")
+    draft_id = save(page)
+    close(page)
+    page.locator("#draft-list-refresh").click()
+    expect(page.locator(".draft-row")).to_have_count(1)
+    if failure == "discard":
+        mutation(page, f"/api/drafts/{draft_id}/discard", "POST", {"request_id": str(uuid4()), "expected_revision": 1})
+        expected = "Luonnos ei ole saatavilla"
+    elif failure == "service":
+        monkeypatch.setattr(local_app.app.state, "draft_service", None)
+        expected = "Luonnospalvelu ei ole käytössä"
+    else:
+        page.route(f"**/api/drafts/{draft_id}", lambda route: route.abort("failed"))
+        expected = "Luonnosta ei voitu lukea"
+    page.locator(".draft-row").click()
+    expect(page.locator("#draft-list-message")).to_contain_text(expected)
+    assert form(page, "customer_description").input_value() == "Avausvirheessä säilyvä teksti"
+    assert counts(local_app) == (1, 0)
+
+
+# Allowed editor text stored by another client; Chromium shows it normalized (CR/LF).
+CRLF_PAYLOAD = {"registration": "TEST\r\nCR\rLF", "customer_description": "Rivi 1\r\nRivi 2\rRivi 3\nRivi 4"}
+SHOWN_CRLF = {"registration": "TESTCRLF", "customer_description": "Rivi 1\nRivi 2\nRivi 3\nRivi 4"}
+WEEK = 7 * 24 * 60 * 60
+
+
+def seed_inquiry(tab, payload):
+    return mutation(tab, "/api/drafts", "POST", {"draft_type": "WORK_INQUIRY", "request_id": str(uuid4()),
+        "payload": payload})["draft_id"]
+
+
+def saved_payload(tab):
+    with tab.expect_response(lambda r: "/api/drafts" in r.url and r.request.method in ("POST", "PUT")) as response:
+        tab.locator("#draft-save").click()
+    assert response.value.ok, response.value.text()
+    expect(tab.locator("#draft-message")).to_contain_text("Luonnos tallennettu.")
+    return response.value.request.post_data_json["payload"]
+
+
+def open_crlf_draft(page, local_app):
+    page.goto(local_app[0], wait_until="networkidle")
+    draft_id = seed_inquiry(page, CRLF_PAYLOAD)
+    before = stored(local_app, draft_id)
+    assert before[0] == CRLF_PAYLOAD
+    open_saved(page, draft_id)
+    for name, value in SHOWN_CRLF.items():
+        assert form(page, name).input_value() == value
+    # Server time one minute later: a content change would also renew retention.
+    return draft_id, before, [before[2] - WEEK + 60]
+
+
+def test_crlf_draft_unchanged_save_keeps_content_revision_and_expiry(page, local_app, monkeypatch):
+    from test_webapp_draft_service import business_clock
+
+    draft_id, before, later = open_crlf_draft(page, local_app)
+    with business_clock(local_app[1], monkeypatch, later):
+        assert saved_payload(page) == CRLF_PAYLOAD
+        assert stored(local_app, draft_id) == before
+    assert counts(local_app) == (1, 0)
+
+
+def test_real_edit_is_saved_while_untouched_crlf_field_keeps_original(page, local_app, monkeypatch):
+    from test_webapp_draft_service import business_clock
+
+    draft_id, before, later = open_crlf_draft(page, local_app)
+    edited = {"registration": "TEST-UUSI", "customer_description": CRLF_PAYLOAD["customer_description"]}
+    with business_clock(local_app[1], monkeypatch, later):
+        form(page, "registration").fill("TEST-UUSI")
+        assert saved_payload(page) == edited
+        assert stored(local_app, draft_id) == (edited, before[1] + 1, later[0] + WEEK)
+        # The text shown at the confirmed save is the new start value.
+        assert saved_payload(page) == edited
+        assert stored(local_app, draft_id) == (edited, before[1] + 1, later[0] + WEEK)
+        form(page, "customer_description").fill("Uusi rivi 1\nUusi rivi 2")
+        typed = {"registration": "TEST-UUSI", "customer_description": "Uusi rivi 1\nUusi rivi 2"}
+        assert saved_payload(page) == typed
+        assert stored(local_app, draft_id) == (typed, before[1] + 2, later[0] + WEEK)
+
+
+def test_edit_restored_to_shown_start_value_keeps_original_content(page, local_app, monkeypatch):
+    from test_webapp_draft_service import business_clock
+
+    draft_id, before, later = open_crlf_draft(page, local_app)
+    form(page, "registration").fill("TEST-VALI")
+    form(page, "customer_description").fill("Väliaikainen muutos")
+    expect(page.locator("#draft-message")).to_contain_text("Tallentamattomia muutoksia.")
+    for name, value in SHOWN_CRLF.items():
+        form(page, name).fill(value)
+    expect(page.locator("#draft-message")).to_contain_text("Luonnos tallentuu vain Tallenna luonnos -painikkeella.")
+    with business_clock(local_app[1], monkeypatch, later):
+        assert saved_payload(page) == CRLF_PAYLOAD
+        assert stored(local_app, draft_id) == before
+
+
+def hold_reads(tab, draft_id):
+    """Hold the real GET response in the browser route; record client-side request failures."""
+    held, failures = [], []
+
+    def hold(route):
+        if route.request.method != "GET":
+            route.continue_()
+            return
+        held.append((route, route.fetch()))
+        tab.evaluate("window.draftReadsHeld = (window.draftReadsHeld || 0) + 1")
+
+    tab.on("requestfailed", lambda request: failures.append(request.failure)
+           if request.method == "GET" and request.url.endswith("/api/drafts/" + draft_id) else None)
+    tab.route(f"**/api/drafts/{draft_id}", hold)
+    return held, failures
+
+
+def test_stalled_server_version_open_times_out_keeps_text_and_allows_retry(page, local_app):
+    page.clock.install()
+    start(page, local_app, "Ensimmäinen tallennettu versio")
+    draft_id = save(page)
+    mutation(page, f"/api/drafts/{draft_id}", "PUT", {"request_id": str(uuid4()), "expected_revision": 1,
+        "payload": {"customer_description": "Toisen välilehden versio"}})
+    form(page, "customer_description").fill("Oma tallentamaton teksti")
+    page.locator("#draft-save").click()
+    expect(page.locator("#draft-message")).to_contain_text("Versioristiriita")
+    held, failures = hold_reads(page, draft_id)
+    page.once("dialog", lambda dialog: dialog.accept())
+    page.locator("#draft-reload").click()
+    page.wait_for_function("window.draftReadsHeld === 1")
+    expect(form(page, "customer_description")).to_be_disabled()
+    page.clock.fast_forward(15000)  # Controlled browser time, no sleep-based race.
+    expect(page.locator("#draft-message")).to_contain_text("Luonnoksen avaus keskeytettiin")
+    expect(form(page, "customer_description")).to_be_enabled()
+    expect(form(page, "customer_description")).to_have_value("Oma tallentamaton teksti")
+    assert failures == ["net::ERR_ABORTED"]
+    form(page, "customer_description").fill("Uudempi oma teksti")
+    held[0][0].fulfill(response=held[0][1])  # The aborted request can no longer reach the page.
+    expect(form(page, "customer_description")).to_have_value("Uudempi oma teksti")
+    expect(page.locator("#draft-message")).not_to_contain_text("Palvelimen luonnos avattu")
+    page.unroute(f"**/api/drafts/{draft_id}")
+    page.once("dialog", lambda dialog: dialog.accept())
+    page.locator("#draft-reload").click()
+    expect(page.locator("#draft-message")).to_contain_text("Palvelimen luonnos avattu")
+    expect(form(page, "customer_description")).to_have_value("Toisen välilehden versio")
+    page.keyboard.press("Escape")
+    expect(page.locator("#new-work-dialog")).not_to_be_visible()
+    assert stored(local_app, draft_id)[:2] == ({"customer_description": "Toisen välilehden versio"}, 2)
+
+
+def test_stalled_list_open_times_out_and_late_response_cannot_replace_other_draft(page, local_app):
+    page.clock.install()
+    start(page, local_app, "Luonnos A", "TEST-A")
+    first = save(page)
+    close(page)
+    page.locator("#new-work-button").click()
+    form(page, "registration").fill("TEST-B")
+    form(page, "customer_description").fill("Luonnos B")
+    second = save(page)
+    close(page)
+    page.locator("#draft-list-refresh").click()
+    expect(page.locator(".draft-row")).to_have_count(2)
+    held, failures = hold_reads(page, first)
+    page.locator(f'[data-draft-id="{first}"]').click()
+    page.wait_for_function("window.draftReadsHeld === 1")
+    page.clock.fast_forward(15000)
+    expect(page.locator("#draft-list-message")).to_contain_text("Luonnoksen avaus keskeytettiin")
+    assert failures == ["net::ERR_ABORTED"]
+    expect(page.locator("#new-work-dialog")).not_to_be_visible()
+    assert form(page, "customer_description").input_value() == "Luonnos B"
+    page.locator(f'[data-draft-id="{second}"]').click()
+    expect(page.locator("#draft-message")).to_contain_text("Palvelimen luonnos avattu")
+    held[0][0].fulfill(response=held[0][1])
+    expect(form(page, "registration")).to_have_value("TEST-B")
+    expect(form(page, "customer_description")).to_have_value("Luonnos B")
+    expect(page.locator("#draft-message")).to_contain_text("Palvelimen luonnos avattu")
+    assert stored(local_app, first)[:2] == ({"registration": "TEST-A", "customer_description": "Luonnos A"}, 1)
+    assert counts(local_app) == (2, 0)
+
+
+def test_late_open_response_after_logout_cannot_restore_cleared_editor(page, local_app):
+    start(page, local_app, "Uloskirjautumisen jälkeen piilossa")
+    draft_id = save(page)
+    close(page)
+    page.locator("#draft-list-refresh").click()
+    expect(page.locator(".draft-row")).to_have_count(1)
+    held, failures = hold_reads(page, draft_id)
+    page.locator(".draft-row").click()
+    page.wait_for_function("window.draftReadsHeld === 1")
+    page.locator("#logout-button").evaluate("button => button.click()")
+    expect(page.locator("#business-shell")).to_be_hidden()
+    assert form(page, "customer_description").input_value() == ""
+    # Real late delivery to the page, before any open timeout.
+    with page.expect_response(lambda r: r.url.endswith("/api/drafts/" + draft_id)) as late:
+        held[0][0].fulfill(response=held[0][1])
+    assert late.value.ok
+    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    assert failures == []
+    assert form(page, "customer_description").input_value() == ""
+    assert not page.locator("#new-work-dialog").evaluate("d => d.open")
+    assert "Uloskirjautumisen jälkeen piilossa" not in page.locator("body").inner_text()
