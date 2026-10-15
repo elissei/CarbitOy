@@ -93,6 +93,13 @@ window.CarbitAuth = (() => {
     return body;
   }
 
+  function rateLimitMessage(value) {
+    const seconds = typeof value === "string" && /^[1-9][0-9]{0,5}$/.test(value) ? Number(value) : NaN;
+    return Number.isSafeInteger(seconds) && seconds <= 86400
+      ? `Liian monta pyyntöä. Odota ${seconds} sekuntia ennen uutta yritystä.`
+      : "Liian monta pyyntöä. Odota hetki ennen uutta yritystä.";
+  }
+
   async function request(operation, data, csrf) {
     const generation = epoch;
     const controller = new AbortController();
@@ -104,7 +111,11 @@ window.CarbitAuth = (() => {
         credentials: "same-origin", cache: "no-store", redirect: "error", headers, signal: controller.signal,
         ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
       if (generation !== epoch) throw new Error("authentication state changed");
-      if (!response.ok) { const problem = new Error("authentication rejected"); problem.status = response.status; throw problem; }
+      if (!response.ok) {
+        const problem = new Error("authentication rejected");
+        problem.status = response.status; problem.retryAfter = response.headers.get("Retry-After");
+        throw problem;
+      }
       if (response.status !== (operation === "logout" ? 204 : 200)) throw new Error("invalid authentication response");
       const body = response.status === 204 ? null : await response.json();
       if (generation !== epoch) throw new Error("authentication state changed");
@@ -150,13 +161,14 @@ window.CarbitAuth = (() => {
 
   function failure(problem, operation) {
     const status = problem.status;
+    const prefix = operation === "logout" ? "Uloskirjautumista ei vahvistettu. " : "";
     if (status === 429) {
-      lock("uncertain", "Liian monta yritystä. Odota vähintään viisi minuuttia ennen uutta yritystä.");
+      lock("uncertain", prefix + rateLimitMessage(problem.retryAfter));
     } else if (status === 401 && ["login", "mfa"].includes(operation)) {
       render("Kirjautuminen tai vahvistus epäonnistui. Tarkista tiedot; tarvittaessa ota yhteyttä ylläpitäjään.");
     } else {
-      lock("uncertain", status === 503 ? "Kirjautumispalvelu ei ole käytettävissä. Yritä myöhemmin."
-        : "Vastausta ei voitu vahvistaa. Tarkista kirjautumistila ennen uutta yritystä. Mitään pyyntöä ei lähetetä uudelleen automaattisesti.");
+      lock("uncertain", prefix + (status === 503 ? "Kirjautumispalvelu ei ole käytettävissä. Yritä myöhemmin."
+        : "Vastausta ei voitu vahvistaa. Tarkista kirjautumistila ennen uutta yritystä. Mitään pyyntöä ei lähetetä uudelleen automaattisesti."));
     }
   }
 
@@ -224,6 +236,6 @@ window.CarbitAuth = (() => {
   window.addEventListener("pagehide", () => { passwordForm.elements.password.value = ""; clearMfa(); });
   window.addEventListener("pageshow", event => { if (event.persisted) lock("uncertain", "Tarkista kirjautumistila ennen jatkamista."); });
   if (document.body.dataset.page === "login") start();
-  return { start, lock, active, activity, epoch: () => epoch,
+  return { start, lock, active, activity, rateLimitMessage, epoch: () => epoch,
     canWrite: () => active() && ["OWNER", "SERVICE_MANAGER"].includes(user?.role) };
 })();

@@ -37,7 +37,11 @@ class PermissionDeniedError(AuthenticationError):
 
 
 class RateLimitError(AuthenticationError):
-    pass
+    def __init__(self, message: str, *, retry_after: int | None = None):
+        if retry_after is not None and (type(retry_after) is not int or retry_after <= 0):
+            raise ValueError("retry delay must be a positive integer")
+        self.retry_after = retry_after
+        super().__init__(message)
 
 
 class AuthVersionConflictError(ValueError):
@@ -57,13 +61,21 @@ class AuthPolicy:
     limit_window_seconds: int = 300
     individual_attempts: int = 5
     global_attempts: int = 30
+    # Combined session/CSRF traffic has its own short availability budget.
+    maintenance_window_seconds: int = 60
+    maintenance_individual_attempts: int = 120
+    maintenance_global_attempts: int = 1200
 
     def __post_init__(self):
         values = tuple(vars(self).values())
         if any(type(value) is not int or value <= 0 for value in values):
             raise ValueError("authentication limits must be positive integers")
+        if max(self.limit_window_seconds, self.maintenance_window_seconds) > 86400:
+            raise ValueError("rate-limit windows must not exceed 86400 seconds")
         if self.individual_attempts > self.global_attempts:
             raise ValueError("individual attempts exceed global attempts")
+        if self.maintenance_individual_attempts > self.maintenance_global_attempts:
+            raise ValueError("individual maintenance attempts exceed global attempts")
 
 
 @dataclass(frozen=True)
@@ -127,6 +139,55 @@ class AuthService:
             (event, actor, subject, now, json.dumps(details or {}, sort_keys=True)),
         ).lastrowid
 
+    def _audit_sampled(self, connection, event: str, now: int, *, sample_key: str, details: dict) -> None:
+        """Persist representative denials, normally one per key/60s, across workers.
+
+        The caller holds BEGIN IMMEDIATE. No mutable process cache or new schema:
+        suppressed repeats write neither counters nor events. This is sampling,
+        not an exact count of all rejected requests. Lookups cover only the
+        last 4096 event IDs; eviction can produce another representative sample.
+        """
+        previous = connection.execute(
+            "SELECT event_id FROM auth_events WHERE event_type=? "
+            "AND event_id > COALESCE((SELECT MAX(event_id) FROM auth_events),0)-4096 "
+            "AND occurred_at>? AND occurred_at<=? "
+            "AND json_extract(details_json,'$.sample_key')=? ORDER BY event_id DESC LIMIT 1",
+            (event, now - 60, now, sample_key),
+        ).fetchone()
+        if previous is None:
+            self._audit(connection, event, now, details={
+                **details, "sample_key": sample_key, "sample_window_seconds": 60,
+                "sampled": True,
+            })
+
+    def _limit_scopes(
+        self, account: str | None, client: TrustedClientContext, *, maintenance: bool,
+        include_global: bool = True, include_client: bool = True,
+    ):
+        window = self.policy.maintenance_window_seconds if maintenance else self.policy.limit_window_seconds
+        individual = self.policy.maintenance_individual_attempts if maintenance else self.policy.individual_attempts
+        global_limit = self.policy.maintenance_global_attempts if maintenance else self.policy.global_attempts
+        scopes = (("global", global_limit),) if include_global else ()
+        if account is not None:
+            scopes += (("account:" + account, individual),)
+        if include_client:
+            scopes += (("client:" + client.connection_key, individual),)
+        return window, scopes
+
+    def _retry_after(
+        self, connection, phase, account, client, now, *, maintenance=False,
+        include_global=True, include_client=True,
+    ) -> int:
+        window, scopes = self._limit_scopes(account, client, maintenance=maintenance,
+                                            include_global=include_global, include_client=include_client)
+        delays = []
+        for scope, limit in scopes:
+            digest = hashlib.sha256((phase + ":" + scope).encode()).hexdigest()
+            row = connection.execute("SELECT * FROM auth_rate_limits WHERE scope_hash=?", (digest,)).fetchone()
+            if row and row["attempts"] >= limit and now < row["window_start"] + window:
+                delays.append(row["window_start"] + window - now)
+        return max(delays, default=window)
+
     @staticmethod
     def _opaque_digest(token: str) -> str:
         if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
@@ -134,21 +195,37 @@ class AuthService:
             return "invalid-token"
         return token_digest(token)
 
-    def _reserve(self, connection, phase: str, account: str | None, client: TrustedClientContext, now: int) -> bool:
+    def _reserve(
+        self, connection, phase: str, account: str | None, client: TrustedClientContext,
+        now: int, *, maintenance: bool = False, include_global: bool = True,
+        include_client: bool = True, operation: str | None = None,
+    ) -> bool:
         if not isinstance(client, TrustedClientContext):
             raise TypeError("use a server-derived client context")
-        connection.execute("DELETE FROM auth_rate_limits WHERE window_start < ?", (now - 86400,))
-        scopes = (("global", self.policy.global_attempts),)
-        if account is not None:
-            scopes += (("account:" + account, self.policy.individual_attempts),)
-        scopes += (("client:" + client.connection_key, self.policy.individual_attempts),)
+        window, scopes = self._limit_scopes(account, client, maintenance=maintenance,
+                                            include_global=include_global, include_client=include_client)
+        reservations = []
+        # The caller holds BEGIN IMMEDIATE: check every scope before spending any
+        # budget. A blocked client/account must not drain another scope or reset
+        # its expired window. Concurrent requests cannot race this reservation.
         for scope, limit in scopes:
             digest = hashlib.sha256((phase + ":" + scope).encode()).hexdigest()
             row = connection.execute("SELECT * FROM auth_rate_limits WHERE scope_hash=?", (digest,)).fetchone()
-            if row and now < row["window_start"] + self.policy.limit_window_seconds and row["attempts"] >= limit:
-                self._audit(connection, "AUTH_RATE_LIMITED", now)
+            active = row is not None and now < row["window_start"] + window
+            if active and row["attempts"] >= limit:
+                scope_kind = scope.split(":", 1)[0]
+                details = {"phase": phase, "scope_kind": scope_kind}
+                if operation is not None:
+                    details["operation"] = operation
+                # Categorical markers only: never persist the counter digest,
+                # raw account/client key, or a per-person window fingerprint.
+                self._audit_sampled(connection, "AUTH_RATE_LIMITED", now,
+                    sample_key=f"RATE:{phase}:{scope_kind}", details=details)
                 return False
-            if not row or now >= row["window_start"] + self.policy.limit_window_seconds:
+            reservations.append((digest, active))
+        connection.execute("DELETE FROM auth_rate_limits WHERE window_start < ?", (now - 86400,))
+        for digest, active in reservations:
+            if not active:
                 connection.execute(
                     "INSERT INTO auth_rate_limits VALUES (?,?,1) "
                     "ON CONFLICT(scope_hash) DO UPDATE SET window_start=excluded.window_start,attempts=1",
@@ -159,21 +236,56 @@ class AuthService:
         return True
 
     def reserve_http_auth(self, operation: str, *, client: TrustedClientContext) -> None:
-        """Bound all auth HTTP attempts, including malformed/CSRF requests."""
+        """Bound every auth request; session/CSRF never spend credential budgets.
+
+        Maintenance endpoints share a separate per-client/global budget, including
+        malformed requests. Logout reserves only its per-client budget here;
+        its global budget is reserved after session/CSRF/payload validation.
+        Login and MFA retain their existing strict
+        HTTP budgets; password/MFA account-level service limits are unchanged.
+        """
         if operation not in {"csrf", "login", "mfa", "session", "logout"}:
             raise ValueError("unknown authentication operation")
+        maintenance = operation in {"csrf", "session", "logout"}
+        phase = ("HTTP_LOGOUT" if operation == "logout" else
+                 "HTTP_MAINTENANCE" if maintenance else "HTTP_AUTH:" + operation)
         with self.repository.transaction() as connection:
-            allowed = self._reserve(connection, "HTTP_AUTH:" + operation, None, client, self._now())
+            now = self._now()
+            include_global = operation != "logout"
+            allowed = self._reserve(connection, phase, None, client, now, maintenance=maintenance,
+                                    include_global=include_global, operation=operation)
+            retry_after = self._retry_after(connection, phase, None, client, now,
+                maintenance=maintenance, include_global=include_global) if not allowed else None
         if not allowed:
-            raise RateLimitError("authentication temporarily limited")
+            raise RateLimitError("authentication temporarily limited", retry_after=retry_after)
+
+    def reserve_logout_global(self, *, client: TrustedClientContext) -> None:
+        """Trusted HTTP adapter only, after valid session, CSRF and empty payload.
+
+        Per-client attempts were already reserved at the HTTP boundary. Do not
+        charge them twice, or let unauthenticated traffic spend this global cap.
+        Revocation still revalidates the session in its own transaction.
+        """
+        with self.repository.transaction() as connection:
+            now = self._now()
+            allowed = self._reserve(connection, "HTTP_LOGOUT", None, client, now,
+                                    maintenance=True, include_client=False, operation="logout")
+            retry_after = self._retry_after(connection, "HTTP_LOGOUT", None, client, now,
+                maintenance=True, include_client=False) if not allowed else None
+        if not allowed:
+            raise RateLimitError("authentication temporarily limited", retry_after=retry_after)
 
     def audit_http_auth(self, operation: str, status_code: int) -> None:
         if operation not in {"csrf", "login", "mfa", "session", "logout"} or type(status_code) is not int:
             raise ValueError("invalid authentication boundary event")
         with self.repository.transaction() as connection:
-            self._audit(connection, "AUTH_HTTP_RESULT", self._now(), details={
-                "operation": operation, "status": status_code,
-            })
+            now = self._now()
+            details = {"operation": operation, "status": status_code}
+            if status_code in {400, 403, 429}:
+                self._audit_sampled(connection, "AUTH_HTTP_RESULT", now,
+                    sample_key=f"HTTP:{operation}:{status_code}", details=details)
+            else:
+                self._audit(connection, "AUTH_HTTP_RESULT", now, details=details)
 
     def inspect_login_challenge(self, token: str) -> datetime:
         """Check persisted consumption, identity, auth version and expiry."""
@@ -216,9 +328,10 @@ class AuthService:
         now = self._now()
         with self.repository.transaction() as connection:
             allowed = self._reserve(connection, "PASSWORD", username, client, now)
+            retry_after = self._retry_after(connection, "PASSWORD", username, client, now) if not allowed else None
             row = connection.execute("SELECT * FROM auth_users WHERE username=?", (username,)).fetchone()
         if not allowed:
-            raise RateLimitError("authentication temporarily limited")
+            raise RateLimitError("authentication temporarily limited", retry_after=retry_after)
         # A peer may upgrade the same hash. Reverify its replacement once, outside
         # the write lock. Never treat an arbitrary changed hash as verified, and
         # never cross an auth-version change (e.g. MFA reset) on a retry.
@@ -300,13 +413,16 @@ class AuthService:
         now = self._now()
         with self.repository.transaction() as connection:
             challenge, user = self._challenge(connection, challenge_token, "ENROLL", now)
-            allowed = self._reserve(connection, "MFA", user["user_id"] if user else "unknown", client, now)
+            account = user["user_id"] if user else "unknown"
+            allowed = self._reserve(connection, "MFA", account, client, now)
+            retry_after = self._retry_after(connection, "MFA", account, client, now) if not allowed else None
             pending = connection.execute("SELECT * FROM auth_enrollments WHERE challenge_hash=?", (self._opaque_digest(challenge_token),)).fetchone()
             step = None
             if allowed and user and not user["mfa_enabled"] and pending and pending["auth_version"] == user["auth_version"] and pending["expires_at"] > now:
                 step = matching_totp_step(self.cipher.decrypt(user["user_id"], pending["totp_ciphertext"]), code, now, None)
             if step is None:
-                self._audit(connection, "MFA_REJECTED", now, subject=user["user_id"] if user else None)
+                if allowed:
+                    self._audit(connection, "MFA_REJECTED", now, subject=user["user_id"] if user else None)
                 result = None
             else:
                 connection.execute("UPDATE auth_users SET mfa_enabled=1,totp_ciphertext=?,last_totp_step=? WHERE user_id=?", (pending["totp_ciphertext"], step, user["user_id"]))
@@ -320,7 +436,7 @@ class AuthService:
                 self._audit(connection, "SESSION_GRANTED", now, subject=user["user_id"], details={"factor": "TOTP"})
                 result = EnrollmentGrant(session=grant, recovery_codes=tuple(SecretStr(item) for item in codes))
         if not allowed:
-            raise RateLimitError("authentication temporarily limited")
+            raise RateLimitError("authentication temporarily limited", retry_after=retry_after)
         if result is None:
             raise AuthenticationError("authentication failed")
         return result
@@ -329,7 +445,9 @@ class AuthService:
         now = self._now()
         with self.repository.transaction() as connection:
             challenge, user = self._challenge(connection, challenge_token, "LOGIN", now)
-            allowed = self._reserve(connection, "MFA", user["user_id"] if user else "unknown", client, now)
+            account = user["user_id"] if user else "unknown"
+            allowed = self._reserve(connection, "MFA", account, client, now)
+            retry_after = self._retry_after(connection, "MFA", account, client, now) if not allowed else None
             valid, factor = False, "TOTP"
             if allowed and user and user["mfa_enabled"] and ((totp_code is None) != (recovery_code is None)):
                 if totp_code is not None:
@@ -342,14 +460,15 @@ class AuthService:
                     valid = connection.execute("UPDATE auth_recovery_codes SET consumed_at=? WHERE user_id=? AND auth_version=? AND code_hash=? AND consumed_at IS NULL", (now, user["user_id"], user["auth_version"], digest)).rowcount == 1
                     factor = "RECOVERY"
             if not valid:
-                self._audit(connection, "MFA_REJECTED", now, subject=user["user_id"] if user else None)
+                if allowed:
+                    self._audit(connection, "MFA_REJECTED", now, subject=user["user_id"] if user else None)
                 result = None
             else:
                 connection.execute("UPDATE auth_challenges SET consumed_at=? WHERE token_hash=?", (now, challenge["token_hash"]))
                 result = self._new_session(connection, user, now, factor)
                 self._audit(connection, "SESSION_GRANTED", now, subject=user["user_id"], details={"factor": factor})
         if not allowed:
-            raise RateLimitError("authentication temporarily limited")
+            raise RateLimitError("authentication temporarily limited", retry_after=retry_after)
         if result is None:
             raise AuthenticationError("authentication failed")
         return result

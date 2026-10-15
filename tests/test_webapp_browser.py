@@ -353,7 +353,7 @@ def test_failed_bootstrap_preserves_form_key_and_never_sends_write(page, local_a
     fill_inquiry(page)
     key = page.evaluate("state.creationKey")
     page.locator('#new-work-form button[type="submit"]').click()
-    expect(page.locator("#new-work-error")).to_have_text("Liian monta yritystä. Odota vähintään viisi minuuttia.")
+    expect(page.locator("#new-work-error")).to_have_text("Liian monta pyyntöä. Odota hetki ennen uutta yritystä.")
     expect(page.locator('#new-work-form [name="customer_description"]')).to_have_value("Keksitty tiedustelu")
     assert page.evaluate("state.creationKey") == key
     assert len(bootstraps) == 1 and writes == [] and local_app[1].list_works() == []
@@ -448,3 +448,41 @@ def test_invalidated_pending_refresh_cannot_restore_cached_proof(page, local_app
     page.wait_for_function("window.proofOutcome === 'rejected'")
     assert page.evaluate("sessionCsrf === null && csrfRefresh === null")
     assert len(held) == 1
+
+
+def test_repeated_page_loads_do_not_hit_credential_rate_limits(page, local_app):
+    auth_responses = []
+    page.on("response", lambda response: auth_responses.append((response.url, response.status))
+            if "/api/auth/" in response.url else None)
+    for _ in range(7):
+        page.goto(local_app[0], wait_until="networkidle")
+        expect(page.locator("#business-shell")).to_be_visible()
+    sessions = [status for url, status in auth_responses if url.endswith("/api/auth/session")]
+    assert len(sessions) == 7 and sessions == [200] * 7
+    assert not any(url.endswith("/api/auth/csrf") for url, _ in auth_responses)
+    assert page.evaluate("localStorage.length === 0 && sessionStorage.length === 0")
+
+
+def test_seven_tabs_share_session_and_reuse_each_tabs_csrf_proof(page, local_app):
+    auth_responses = []
+    page.context.on("response", lambda response: auth_responses.append((response.url, response.status))
+                    if "/api/auth/" in response.url else None)
+    tabs = [page] + [page.context.new_page() for _ in range(6)]
+    try:
+        for tab in tabs:
+            tab.goto(local_app[0], wait_until="networkidle")
+            expect(tab.locator("#business-shell")).to_be_visible()
+            assert tab.evaluate("""async () => {
+                const proof = await sessionProof();
+                const reused = await Promise.all(Array.from({length: 8}, () => sessionProof()));
+                return typeof proof === 'string' && reused.every(value => value === proof);
+            }""")
+        for tab in tabs:
+            expect(tab.locator("#business-shell")).to_be_visible()
+        sessions = [status for url, status in auth_responses if url.endswith("/api/auth/session")]
+        proofs = [status for url, status in auth_responses if url.endswith("/api/auth/csrf")]
+        assert len(sessions) == 7 and sessions == [200] * 7
+        assert len(proofs) == 7 and proofs == [200] * 7
+    finally:
+        for tab in tabs[1:]:
+            tab.close()

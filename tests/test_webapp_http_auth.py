@@ -429,11 +429,11 @@ def test_logout_revocation_failure_keeps_cookie_for_retry(http, monkeypatch):
 
 def test_invalid_http_requests_are_persistently_limited_and_audited(http):
     for _ in range(5):
-        assert http.post("/api/auth/login", headers={"Origin": "null"}, json={}).status_code == 403
+        assert http.post("/api/auth/login", headers={"Origin": ORIGIN}, json={}).status_code == 403
     response = http.post("/api/auth/login", headers={"Origin": ORIGIN, "X-Forwarded-For": str(uuid4())}, json={})
     assert response.status_code == 429
     events = rows(http, "auth_events")
-    assert sum(event["event_type"] == "AUTH_HTTP_RESULT" for event in events) == 6
+    assert sum(event["event_type"] == "AUTH_HTTP_RESULT" for event in events) == 2
     assert any(event["event_type"] == "AUTH_RATE_LIMITED" for event in events)
     http.clock.advance(300)
     assert http.post("/api/auth/login", headers={"Origin": ORIGIN}, json={}).status_code == 403

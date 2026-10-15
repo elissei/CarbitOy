@@ -185,6 +185,7 @@ def _logout(request, payload):
     _verify(request, "session", **_session_bindings(cookies[SESSION_COOKIE], session))
     if payload:
         raise HttpAuthError(422, "Invalid authentication request")
+    service.reserve_logout_global(client=request.state.auth_client)
     service.revoke_session(cookies[SESSION_COOKIE])
     response = Response(status_code=204, headers={"Cache-Control": "no-store"})
     clear_auth_cookies(response)

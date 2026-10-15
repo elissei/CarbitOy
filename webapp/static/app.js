@@ -133,8 +133,11 @@ async function sessionProof() {
       if (generation !== csrfGeneration) throw new Error("Kirjautumistila muuttui. Tarkista tila.");
       if (!response.ok) {
         if (response.status === 401) CarbitAuth.lock();
-        throw new Error(response.status === 429 ? "Liian monta yritystä. Odota vähintään viisi minuuttia."
+        const problem = new Error(response.status === 429
+          ? CarbitAuth.rateLimitMessage(response.headers.get("Retry-After"))
           : "Kirjautumisen suojausta ei voitu vahvistaa. Tarkista kirjautumistila tai yritä myöhemmin.");
+        problem.status = response.status; problem.retryAfter = response.headers.get("Retry-After");
+        throw problem;
       }
       if (body.state !== "session") {
         CarbitAuth.lock();

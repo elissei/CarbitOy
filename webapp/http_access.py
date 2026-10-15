@@ -78,6 +78,10 @@ class HttpAccessGate(BaseHTTPMiddleware):
         if origins and (len(origins) != 1 or origins[0] not in settings.external_origins):
             raise HttpAuthError(403, "Origin not allowed")
         if auth or write:
+            if auth:
+                sites = request.headers.getlist("sec-fetch-site")
+                if sites and sites != ["same-origin"]:
+                    raise HttpAuthError(403, "Cross-site authentication request")
             if ((write or request.method == "POST") and len(origins) != 1) or (origins and origins[0] != target):
                 raise HttpAuthError(403, "Origin not allowed")
             for name in ("x-csrf-token", "x-carbit-auth", "content-type", "content-length", "authorization"):
@@ -103,19 +107,23 @@ class HttpAccessGate(BaseHTTPMiddleware):
         try:
             if getattr(request.app.state, "csrf_protector", None) is None or request.client is None:
                 return _error(503, "Authentication unavailable")
+            # Stateless HTTPS/Host/Origin/Fetch Metadata/header/cookie checks
+            # precede every persistent rate-limit reservation.
+            self._transport(request, settings, auth=True)
             # The ASGI connection address is server-owned. Forwarded identity/IP
             # headers, ports, request bodies and cookies cannot change this key.
             client = TrustedClientContext(request.client.host)
             request.state.auth_client = client
             await run_in_threadpool(service.reserve_http_auth, operation, client=client)
-            self._transport(request, settings, auth=True)
             response = await call_next(request)
         except HttpAuthError as error:
             response = _error(error.status, error.detail)
         except CsrfValidationError:
             response = _error(403, "Invalid CSRF security context")
-        except RateLimitError:
+        except RateLimitError as error:
             response = _error(429, "Authentication temporarily limited")
+            if error.retry_after is not None:
+                response.headers["Retry-After"] = str(error.retry_after)
         except AuthenticationError:
             response = _error(401, "Authentication failed")
         except (sqlite3.DatabaseError, CryptoBusyError, InvalidToken, ValueError, TypeError, KeyError):
