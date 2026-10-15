@@ -23,11 +23,14 @@ class WorkshopPermission(str, Enum):
     READ_LABOUR_PLAN = "READ_LABOUR_PLAN"
     SAVE_LABOUR_PLAN = "SAVE_LABOUR_PLAN"
     APPROVE_LABOUR_PLAN = "APPROVE_LABOUR_PLAN"
+    READ_OWN_DRAFT = "READ_OWN_DRAFT"
+    WRITE_OWN_DRAFT = "WRITE_OWN_DRAFT"
 
 
 _READ = frozenset({WorkshopPermission.READ_LABOUR_PLAN})
 _WRITE = _READ | {WorkshopPermission.SAVE_LABOUR_PLAN, WorkshopPermission.APPROVE_LABOUR_PLAN}
-_ROLE_PERMISSIONS = MappingProxyType({UserRole.OWNER: _WRITE, UserRole.SERVICE_MANAGER: _WRITE,
+_DRAFT = frozenset({WorkshopPermission.READ_OWN_DRAFT, WorkshopPermission.WRITE_OWN_DRAFT})
+_ROLE_PERMISSIONS = MappingProxyType({UserRole.OWNER: _WRITE | _DRAFT, UserRole.SERVICE_MANAGER: _WRITE | _DRAFT,
                                      UserRole.IT_ADMIN: _READ})
 
 

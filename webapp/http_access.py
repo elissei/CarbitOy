@@ -32,6 +32,11 @@ ROUTE_PERMISSIONS = MappingProxyType({
     ("/api/works", "POST"): "write",
     ("/api/works/{work_id}", "GET"): "read",
     ("/api/works/{work_id}/labour", "PUT"): "write",
+    ("/api/drafts", "GET"): "draft_read",
+    ("/api/drafts", "POST"): "draft_write",
+    ("/api/drafts/{draft_id}", "GET"): "draft_read",
+    ("/api/drafts/{draft_id}", "PUT"): "draft_write",
+    ("/api/drafts/{draft_id}/discard", "POST"): "draft_write",
     ("/api/auth/csrf", "GET"): "auth",
     ("/api/auth/login", "POST"): "auth",
     ("/api/auth/mfa", "POST"): "auth",
@@ -164,8 +169,8 @@ class HttpAccessGate(BaseHTTPMiddleware):
             # Unknown paths/methods can produce only the router's 404/405/redirect.
             return await call_next(request)
         token = request.state.security_cookies.get(SESSION_COOKIE)
-        is_write = permission == 'write'
-        is_read = permission == 'read'
+        is_write = permission in ('write','draft_write')
+        is_read = permission in ('read','draft_read')
         if not token:
             return _error(401, "Authentication required")
         try:

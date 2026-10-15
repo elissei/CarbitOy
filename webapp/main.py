@@ -31,6 +31,10 @@ from webapp.auth_service import AuthService, AuthenticationError, PermissionDeni
 from webapp.auth_settings import AuthSettings
 from webapp.http_access import HttpAccessGate, validate_route_coverage
 from webapp.http_auth import register_auth_routes
+from webapp.http_drafts import register_draft_routes
+from webapp.draft_settings import DraftApiSettings
+from webapp.draft_repository import DraftRepository
+from webapp.draft_service import DraftService
 from webapp.business_identity import BusinessActor
 from webapp.labour_service import WorkshopPermission
 from webapp.workshop_identity import resolve_workshop_context
@@ -114,6 +118,7 @@ def _business_context(request: Request, permission=WorkshopPermission.SAVE_LABOU
 
 def create_app(
     database_path: str | Path | None = None, *, auth_settings: AuthSettings | None = None,
+    draft_settings: DraftApiSettings | None = None,
 ) -> FastAPI:
     selected_path = Path(
         database_path or os.environ.get("CARBIT_DATABASE", DEFAULT_DATABASE)
@@ -124,6 +129,9 @@ def create_app(
     async def lifespan(application: FastAPI):
         settings = auth_settings if auth_settings is not None else AuthSettings.from_environment()
         application.state.route_access = validate_route_coverage(application)
+        drafts = draft_settings if draft_settings is not None else DraftApiSettings.from_environment()
+        if not isinstance(drafts,DraftApiSettings):
+            raise TypeError('server draft settings required')
         if (settings.database_path.resolve() == selected_path.resolve()
                 or (settings.database_path.exists() and selected_path.exists()
                     and settings.database_path.samefile(selected_path))):
@@ -142,6 +150,9 @@ def create_app(
         selected_path.parent.mkdir(parents=True, exist_ok=True)
         repository.initialize()
         application.state.auth_service.workshop_directory = WorkshopDirectory(repository, auth_repository)
+        application.state.draft_service = (
+            DraftService(DraftRepository(repository,keyring=drafts.keyring)) if drafts.enabled else None
+        )
         yield
 
     app = FastAPI(
@@ -178,6 +189,7 @@ def create_app(
                             headers={"Cache-Control": "no-store"})
 
     register_auth_routes(app)
+    register_draft_routes(app,_business_context)
     app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
     login_headers = {

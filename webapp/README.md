@@ -147,6 +147,23 @@ luonnokset. Epäselviä tallennuksia ei lähetetä automaattisesti uudestaan.
 
 ## Testit
 
+CP4B-2A:n [luonnosskeema ja migraatiorajat](../docs/persistent-draft-schema-checkpoint-4b-2a.md)
+lisäävät tyhjät luonnostaulut alustuksessa. Pysyvien luonnosten CRUD, HTTP ja
+selain-autosave eivät vielä ole käytössä.
+
+CP4B-2B:n [sisäinen luonnospalvelu](../docs/persistent-draft-service-checkpoint-4b-2b.md)
+lisää omistajakohtaiset repository-operaatiot ja lisämigraation kuiteille sekä
+hylkäyspoistolle. [Kovennus](../docs/persistent-draft-hardening-checkpoint-4b-2b.md)
+lisää sisäisen siivouksen, HMAC-avainkierron ja päättyneiden luonnosten
+metadata-toiston. Tekninen säilytys on kehityspäätöksenä enintään 90 päivää
+luonnoksen päättymisestä; yrittäjän lopullinen vahvistus on avoin.
+HTTP/UI/autosave eivät ole käytössä.
+
+CP4B-3A:n [luonnosten HTTP-sopimus](../docs/persistent-draft-http-checkpoint-4b-3a.md)
+lisää owner-only create/list/read/save/discard-reitit. API on oletuksena pois
+käytöstä; `CARBIT_DRAFT_API_ENABLED=1` vaatii erikseen konfiguroidun HMAC-keyringin.
+Selain-autosavea, muunnosta ja labour submissionia ei toteuteta.
+
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 ```

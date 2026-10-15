@@ -9,6 +9,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 from webapp.labour_migrations import apply_labour_migrations
+from webapp.draft_migrations import apply_draft_migrations
 from webapp.business_identity import BusinessActor
 from webapp.workshop_context import TrustedWorkshopContext, WorkshopPermission
 from webapp.workshop_migrations import apply_workshop_migrations
@@ -97,6 +98,7 @@ class WorkRepository:
             connection.execute("ALTER TABLE work_events ADD COLUMN work_version INTEGER")
         apply_labour_migrations(connection)
         apply_workshop_migrations(connection)
+        apply_draft_migrations(connection)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
