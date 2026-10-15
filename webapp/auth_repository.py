@@ -3,6 +3,7 @@
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
+from uuid import uuid4
 
 
 SCHEMA = """
@@ -120,7 +121,7 @@ class AuthRepository:
         with self.transaction() as connection:
             connection.execute("CREATE TABLE IF NOT EXISTS auth_schema_migrations (version INTEGER PRIMARY KEY)")
             applied = {row[0] for row in connection.execute("SELECT version FROM auth_schema_migrations")}
-            if applied - {1}:
+            if applied not in (set(), {1}, {1, 2}):
                 raise RuntimeError("unknown authentication schema version")
             if 1 not in applied:
                 for statement in SCHEMA.split(";"):
@@ -134,3 +135,24 @@ class AuthRepository:
                             "SELECT RAISE(ABORT, 'immutable authentication history'); END"
                         )
                 connection.execute("INSERT INTO auth_schema_migrations(version) VALUES (1)")
+            if 2 not in applied:
+                connection.execute("""CREATE TABLE auth_store_identity (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                    store_id TEXT NOT NULL UNIQUE CHECK(length(store_id)=36)
+                )""")
+                connection.execute("INSERT INTO auth_store_identity VALUES (1,?)", (str(uuid4()),))
+                for operation in ("UPDATE", "DELETE"):
+                    connection.execute(f"""CREATE TRIGGER auth_store_identity_immutable_{operation.lower()}
+                        BEFORE {operation} ON auth_store_identity
+                        BEGIN SELECT RAISE(ABORT,'immutable authentication store identity'); END""")
+                connection.execute("INSERT INTO auth_schema_migrations(version) VALUES (2)")
+
+    def store_id(self, connection=None) -> str:
+        """Persistent identity namespace; no secrets and no initialization on reads."""
+        if connection is None:
+            with self._connect() as connection:
+                return self.store_id(connection)
+        row = connection.execute("SELECT store_id FROM auth_store_identity WHERE singleton=1").fetchone()
+        if row is None:
+            raise RuntimeError("authentication store identity is missing")
+        return row[0]

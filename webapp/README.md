@@ -5,6 +5,9 @@ samasta HTTPS-palvelimesta. CP4A lisää selaimen kirjautumisen:
 [checkpoint ja turvallisuusrajat](../docs/browser-authentication-checkpoint-4a.md).
 Vain `/login`, `/login.js` ja `/login.css` ovat julkisia. Sovellus, koko `/static`
 ja business-API vaativat henkilökohtaisen MFA-istunnon. Tämä ei ole tuotantohyväksyntä.
+CP4B-1 vaatii lisäksi eksplisiittisen korjaamojäsenyyden ja palvelimen
+ratkaiseman aktiivisen korjaamon. [Migraatio, offline-jäsenyydet ja turvallisuusrajat](../docs/workshop-foundation-checkpoint-4b-1.md).
+Skeeman alustus ei myönnä jäsenyyksiä tai kohdista vanhoja töitä automaattisesti.
 
 ## Käynnistys PowerShellissä
 

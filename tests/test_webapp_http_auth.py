@@ -18,6 +18,7 @@ from webapp.auth_csrf import COOKIE_NAMES, MFA_COOKIE, PREAUTH_COOKIE, SESSION_C
 from webapp.auth_models import UserRole
 from webapp.auth_service import AuthenticationError, AuthPolicy, TrustedClientContext
 from webapp.auth_settings import AuthConfigurationError
+from workshop_support import TEST_WORKSHOP
 
 
 ORIGIN = "https://testserver"
@@ -55,6 +56,8 @@ def provision(http, role=UserRole.OWNER):
     service = http.app.state.auth_service
     user = service.provision_identity(username="fictional." + uuid4().hex, display_name="Fictional HTTP user",
                                       role=role, password=TEST_PASSWORD)
+    service.workshop_directory.grant_membership(user.user_id, TEST_WORKSHOP,
+        operator_reference="Explicit HTTP lifecycle fixture membership")
     client = TrustedClientContext(str(user.user_id))
     challenge = service.begin_login(user.username, TEST_PASSWORD, client=client)
     token = challenge.token.get_secret_value()

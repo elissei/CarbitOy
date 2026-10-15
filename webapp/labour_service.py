@@ -12,7 +12,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, localcontext
-from enum import Enum
 from uuid import uuid4
 
 from pydantic import Field, model_validator
@@ -23,36 +22,12 @@ from domain.models.work_plan import WorkPlan
 from services.labour_planning import approve_labour_plan_adjusted, approve_labour_plan_unchanged
 from webapp.database import IdempotencyConflictError, VersionConflictError, WorkNotFoundError, WorkRepository
 from webapp.business_identity import BusinessActor
+from webapp.workshop_context import TrustedWorkshopContext, WorkshopPermission
 from webapp.labour_models import (
     CoverageStatus, LabourPlanRequestRecord, LabourPlanRevisionRecord,
     LabourReviewDecisionRecord, OriginalWorkTimeRecord, ReviewDecisionStatus,
     StorageRecord, decimal_storage_text,
 )
-
-
-class WorkshopPermission(str, Enum):
-    READ_LABOUR_PLAN = "READ_LABOUR_PLAN"
-    SAVE_LABOUR_PLAN = "SAVE_LABOUR_PLAN"
-    APPROVE_LABOUR_PLAN = "APPROVE_LABOUR_PLAN"
-
-
-@dataclass(frozen=True)
-class TrustedWorkshopContext:
-    employee_id: str
-    permissions: frozenset[WorkshopPermission]
-    actor: BusinessActor | None = None
-
-    def __post_init__(self):
-        if not isinstance(self.employee_id, str) or not self.employee_id.strip():
-            raise ValueError("trusted employee identity is required")
-        if not isinstance(self.permissions, frozenset) or any(
-            not isinstance(permission, WorkshopPermission) for permission in self.permissions
-        ):
-            raise ValueError("trusted permissions must be an immutable permission set")
-        if self.actor is not None and (
-            not isinstance(self.actor, BusinessActor) or str(self.actor.user_id) != self.employee_id
-        ):
-            raise ValueError("attribution must match the trusted employee UUID")
 
 
 class StaleLabourPlanError(ValueError):
@@ -175,10 +150,8 @@ class LabourPlanService:
             raise PermissionError("a trusted authorized workshop context is required")
 
     @staticmethod
-    def _inquiry(connection, inquiry_id, expected_version=None):
-        row = connection.execute("SELECT * FROM work_inquiries WHERE id=?", (inquiry_id,)).fetchone()
-        if row is None:
-            raise WorkNotFoundError(inquiry_id)
+    def _inquiry(connection, inquiry_id, expected_version=None, *, context):
+        row = WorkRepository._find_inquiry(connection, inquiry_id, context)
         if expected_version is not None and row["version"] != expected_version:
             raise VersionConflictError(inquiry_id)
         return row
@@ -299,12 +272,12 @@ class LabourPlanService:
         self._authorize(context, WorkshopPermission.SAVE_LABOUR_PLAN)
         command = SaveLabourPlanCommand.model_validate(command.model_dump(round_trip=True))
         request_json = self._request_json(command, context, "SAVE_PLAN")
-        with self.repository._connect() as connection, connection:
-            connection.execute("BEGIN IMMEDIATE")
+        with self.repository.operation(context, WorkshopPermission.SAVE_LABOUR_PLAN, write=True) as connection:
+            self._inquiry(connection, command.inquiry_id, context=context)
             replay = self._replay(connection, command, context, "SAVE_PLAN", request_json)
             if replay is not None:
                 return replay
-            inquiry = self._inquiry(connection, command.inquiry_id, command.expected_version)
+            inquiry = self._inquiry(connection, command.inquiry_id, command.expected_version, context=context)
             with _exact_original_arithmetic(command.original_times):
                 plan = build_storage_labour_plan(command.work_plan, command.original_times)
                 self._check_identity(plan, command.expected_content_id, command.expected_rules_version)
@@ -404,12 +377,12 @@ class LabourPlanService:
         self._authorize(context, WorkshopPermission.APPROVE_LABOUR_PLAN)
         command = ApproveLabourPlanCommand.model_validate(command.model_dump(round_trip=True))
         request_json = self._request_json(command, context, "APPROVE_LABOUR")
-        with self.repository._connect() as connection, connection:
-            connection.execute("BEGIN IMMEDIATE")
+        with self.repository.operation(context, WorkshopPermission.APPROVE_LABOUR_PLAN, write=True) as connection:
+            self._inquiry(connection, command.inquiry_id, context=context)
             replay = self._replay(connection, command, context, "APPROVE_LABOUR", request_json)
             if replay is not None:
                 return replay
-            inquiry = self._inquiry(connection, command.inquiry_id, command.expected_version)
+            inquiry = self._inquiry(connection, command.inquiry_id, command.expected_version, context=context)
             stored = self._load_active(connection, inquiry)
             if command.expected_revision_id != stored.revision.revision_id:
                 raise StaleLabourPlanError("active revision changed since review")
@@ -455,15 +428,13 @@ class LabourPlanService:
 
     def get_active_plan(self, context: TrustedWorkshopContext, inquiry_id: str) -> StoredLabourPlan:
         self._authorize(context, WorkshopPermission.READ_LABOUR_PLAN)
-        with self.repository._connect() as connection, connection:
-            connection.execute("BEGIN")
-            return self._load_active(connection, self._inquiry(connection, inquiry_id))
+        with self.repository.operation(context, WorkshopPermission.READ_LABOUR_PLAN, write=False) as connection:
+            return self._load_active(connection, self._inquiry(connection, inquiry_id, context=context))
 
     def decision_history(self, context: TrustedWorkshopContext, inquiry_id: str):
         self._authorize(context, WorkshopPermission.READ_LABOUR_PLAN)
-        with self.repository._connect() as connection, connection:
-            connection.execute("BEGIN")
-            self._inquiry(connection, inquiry_id)
+        with self.repository.operation(context, WorkshopPermission.READ_LABOUR_PLAN, write=False) as connection:
+            self._inquiry(connection, inquiry_id, context=context)
             return self._history(connection, inquiry_id)
 
     def require_approved_final_hours(self, context: TrustedWorkshopContext, *, inquiry_id: str,
@@ -471,9 +442,8 @@ class LabourPlanService:
                                      expected_rules_version: str, expected_revision_id: str) -> Decimal:
         """Current approved Decimal only; no pricing, quote creation or sending."""
         self._authorize(context, WorkshopPermission.READ_LABOUR_PLAN)
-        with self.repository._connect() as connection, connection:
-            connection.execute("BEGIN")
-            inquiry = self._inquiry(connection, inquiry_id, expected_version)
+        with self.repository.operation(context, WorkshopPermission.READ_LABOUR_PLAN, write=False) as connection:
+            inquiry = self._inquiry(connection, inquiry_id, expected_version, context=context)
             stored = self._load_active(connection, inquiry)
             if expected_revision_id != stored.revision.revision_id:
                 raise StaleLabourPlanError("active revision changed")

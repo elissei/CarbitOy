@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from http_auth_support import AuthenticatedTestClient as TestClient
 
-from webapp.database import WorkRepository
+from workshop_support import ScopedTestRepository as WorkRepository
 from webapp.labour_migrations import apply_labour_migrations
 from webapp.labour_models import (
     CoverageStatus, LabourPlanRevisionRecord, OriginalWorkTimeRecord, decimal_storage_text,

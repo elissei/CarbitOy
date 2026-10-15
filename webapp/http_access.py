@@ -17,7 +17,7 @@ from starlette.staticfiles import StaticFiles
 from webapp.auth_models import IdentityKind, UserRole
 from webapp.auth_crypto import CryptoBusyError
 from webapp.auth_csrf import SESSION_COOKIE, CsrfValidationError
-from webapp.auth_service import AuthenticationError, RateLimitError, TrustedClientContext
+from webapp.auth_service import AuthenticationError, PermissionDeniedError, RateLimitError, TrustedClientContext
 from webapp.http_auth import HttpAuthError, security_cookies
 
 
@@ -156,14 +156,16 @@ class HttpAccessGate(BaseHTTPMiddleware):
             # Unknown paths/methods can produce only the router's 404/405/redirect.
             return await call_next(request)
         token = request.state.security_cookies.get(SESSION_COOKIE)
+        is_write = permission == 'write'
+        is_read = permission == 'read'
         if not token:
             return _error(401, "Authentication required")
         try:
-            if permission == "write":
+            if is_write:
                 session = await run_in_threadpool(service.inspect_session, token)
                 user = session.user
             else:
-                user = await run_in_threadpool(service.require_session, token)
+                user = (await run_in_threadpool(service.inspect_session, token)).user
         except AuthenticationError:
             return _error(401, "Authentication required")
         except sqlite3.DatabaseError:
@@ -173,7 +175,7 @@ class HttpAccessGate(BaseHTTPMiddleware):
         roles = READ_ROLES if permission == "read" else WRITE_ROLES
         if user.role not in roles:
             return _error(403, "Permission denied")
-        if permission == "write":
+        if is_write:
             try:
                 self._transport(request, settings, write=True)
                 if set(request.state.security_cookies) != {SESSION_COOKIE}:
@@ -204,10 +206,25 @@ class HttpAccessGate(BaseHTTPMiddleware):
             except (sqlite3.DatabaseError, ValueError, TypeError, KeyError):
                 return _error(503, "Authentication unavailable")
         # Server-owned identity; not yet a labour-approval context or event actor.
+        try:
+            # No request/header/body workshop identifier participates in selection.
+            await run_in_threadpool(service.workshop_directory.resolve, user.user_id)
+            if is_read:
+                # Preserve authorized read activity, but never touch a denied membership.
+                user = await run_in_threadpool(service.require_session, token)
+        except PermissionDeniedError:
+            return _error(403, "Permission denied")
+        except AuthenticationError:
+            return _error(401, "Authentication required")
+        except (sqlite3.DatabaseError, ValueError, TypeError, KeyError, AttributeError, RuntimeError):
+            return _error(503, "Workshop authorization unavailable")
         request.state.authenticated_user = user
         response = await call_next(request)
-        if permission == "write" and 200 <= response.status_code < 300:
+        if is_write and 200 <= response.status_code < 300:
             try:
+                # Business authorization was held under the auth writer
+                # reservation until the handler's business commit. This later
+                # refresh is activity bookkeeping, never its authorization.
                 # Never touch based on the pre-dispatch role snapshot. The
                 # current role and full session validity are checked atomically
                 # with the update in the auth database, after handler success.

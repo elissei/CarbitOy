@@ -84,6 +84,7 @@ class ValidatedSession:
     user: User
     absolute_expiry: datetime
     idle_expiry: datetime
+    session_id: str
 
 
 def _utc(value: int) -> datetime:
@@ -355,6 +356,10 @@ class AuthService:
 
     def _session(self, connection, token: str, now: int):
         session = connection.execute("SELECT * FROM auth_sessions WHERE token_hash=?", (self._opaque_digest(token),)).fetchone()
+        return self._validate_session_row(connection, session, now)
+
+    def _validate_session_row(self, connection, session, now: int):
+        """One validator for bearer-token checks and guarded server session IDs."""
         user = connection.execute("SELECT * FROM auth_users WHERE user_id=?", (session["user_id"],)).fetchone() if session else None
         if session is None or user is None or session["revoked_at"] is not None or not session["created_at"] <= now < session["expires_at"] or now >= session["last_seen_at"] + self.policy.idle_seconds or not user["enabled"] or not user["mfa_enabled"] or user["kind"] != "HUMAN" or session["auth_version"] != user["auth_version"]:
             raise AuthenticationError("authentication failed")
@@ -373,7 +378,8 @@ class AuthService:
                 last_seen = now
                 connection.execute("UPDATE auth_sessions SET last_seen_at=? WHERE session_id=?", (now, session["session_id"]))
             return ValidatedSession(_user(user), _utc(session["expires_at"]),
-                                    _utc(min(session["expires_at"], last_seen + self.policy.idle_seconds)))
+                                    _utc(min(session["expires_at"], last_seen + self.policy.idle_seconds)),
+                                    session["session_id"])
 
     def refresh_session_for_roles(self, token: str, *, allowed_roles: frozenset[UserRole]) -> bool:
         """After an accepted operation, atomically revalidate identity/role and refresh.

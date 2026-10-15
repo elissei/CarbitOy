@@ -3,6 +3,7 @@
 import base64
 import ipaddress
 import secrets
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -20,6 +21,7 @@ from webapp.auth_models import SessionCookiePolicy, UserRole
 from webapp.auth_service import TrustedClientContext
 from webapp.auth_settings import AuthSettings, CsrfSigningKey
 from webapp.main import create_app
+from workshop_support import ScopedTestRepository, TEST_WORKSHOP
 
 
 TEST_PASSWORD = "Fictional HTTPS regression test passphrase"
@@ -41,14 +43,30 @@ def settings_for(database_path, origin="https://testserver"):
 
 def create_test_app(database_path=None, *, auth_settings=None):
     assert database_path is not None
-    return create_app(database_path, auth_settings=auth_settings or settings_for(str(database_path) + ".auth.db"))
+    repository = ScopedTestRepository(database_path)
+    app = create_app(database_path, auth_settings=auth_settings or settings_for(str(database_path) + ".auth.db"))
+    production_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def fixture_lifespan(application):
+        async with production_lifespan(application):
+            repository.initialize()
+            yield
+
+    app.router.lifespan_context = fixture_lifespan
+    app.state.repository = repository
+    return app
 
 
-def grant_session(service, role=UserRole.OWNER):
+def grant_session(service, role=UserRole.OWNER, *, membership=True):
     user = service.provision_identity(
         username="test." + uuid4().hex, display_name="Fictional HTTP test user",
         role=role, password=TEST_PASSWORD,
     )
+    if membership and getattr(service, "workshop_directory", None) is not None:
+        service.workshop_directory.grant_membership(
+            user.user_id, TEST_WORKSHOP, operator_reference="Explicit fictional regression-test membership",
+        )
     client = TrustedClientContext(str(user.user_id))
     challenge = service.begin_login(user.username, TEST_PASSWORD, client=client)
     token = challenge.token.get_secret_value()

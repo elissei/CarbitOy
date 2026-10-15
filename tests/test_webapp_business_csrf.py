@@ -48,7 +48,7 @@ def write(http, request):
 def snapshot(http):
     with http.app.state.repository._connect() as connection:
         return {table: [tuple(row) for row in connection.execute("SELECT * FROM " + table)]
-                for table in ("work_inquiries", "work_events", "inquiry_creation_requests")}
+                for table in ("work_inquiries", "work_events", "scoped_inquiry_creation_requests")}
 
 
 def session_activity(http):

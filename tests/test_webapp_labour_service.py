@@ -14,7 +14,8 @@ from domain.models.labour_plan import LabourReviewStatus
 from domain.models.vehicle import Vehicle
 from domain.models.work_item import Operation, WorkItem
 from domain.models.work_plan import PlannedWork, WorkPlan
-from webapp.database import IdempotencyConflictError, VersionConflictError, WorkRepository
+from webapp.database import IdempotencyConflictError, VersionConflictError
+from workshop_support import ScopedTestRepository as WorkRepository
 from webapp.labour_models import OriginalWorkTimeRecord
 from webapp.labour_service import (
     ApproveLabourPlanCommand, LabourPlanService, SaveLabourPlanCommand,
@@ -25,7 +26,8 @@ from http_auth_support import create_test_app as create_app
 
 
 # Explicit test context only. Production has no authentication/context issuer yet.
-TEST_CONTEXT = TrustedWorkshopContext("test-employee-stable-id", frozenset(WorkshopPermission))
+from workshop_support import test_context
+TEST_CONTEXT = test_context("test-employee-stable-id")
 
 
 @pytest.fixture
@@ -404,7 +406,7 @@ def test_idempotency_is_scoped_to_trusted_employee(environment):
     saved = service.save_plan(TEST_CONTEXT, save_command(inquiry_id))
     request = approval(saved)
     first = service.approve_plan(TEST_CONTEXT, request)
-    other = TrustedWorkshopContext("another-test-employee", frozenset(WorkshopPermission))
+    other = test_context("another-test-employee")
     with pytest.raises(VersionConflictError):
         service.approve_plan(other, request)
     second = service.approve_plan(other, request.model_copy(update={"expected_version": first.work_version}))

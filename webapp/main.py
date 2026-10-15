@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -34,6 +34,8 @@ from webapp.http_auth import register_auth_routes
 from webapp.business_identity import BusinessActor
 from webapp.labour_service import WorkshopPermission
 from webapp.workshop_identity import resolve_workshop_context
+from webapp.workshop_repository import WorkshopDirectory
+from webapp.workshop_context import WorkshopAccessDenied
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -91,17 +93,17 @@ class RecordLabourRequest(BaseModel):
         return value.strip() or None
 
 
-def _business_actor(request: Request) -> BusinessActor:
+def _business_context(request: Request, permission=WorkshopPermission.SAVE_LABOUR_PLAN):
     """After body validation, resolve current writer identity from the real session."""
     try:
         context = resolve_workshop_context(
             request.app.state.auth_service,
             request.state.security_cookies.get(SESSION_COOKIE),
-            required_permission=WorkshopPermission.SAVE_LABOUR_PLAN,
+            required_permission=permission,
         )
         if context.actor is None:
             raise ValueError("missing authenticated attribution")
-        return context.actor
+        return context
     except PermissionDeniedError as error:
         raise HTTPException(status_code=403, detail="Permission denied") from error
     except AuthenticationError as error:
@@ -122,6 +124,10 @@ def create_app(
     async def lifespan(application: FastAPI):
         settings = auth_settings if auth_settings is not None else AuthSettings.from_environment()
         application.state.route_access = validate_route_coverage(application)
+        if (settings.database_path.resolve() == selected_path.resolve()
+                or (settings.database_path.exists() and selected_path.exists()
+                    and settings.database_path.samefile(selected_path))):
+            raise ValueError("auth and business databases must be distinct")
         auth_repository = AuthRepository(settings.database_path)
         auth_repository.initialize()
         application.state.auth_settings = settings
@@ -135,6 +141,7 @@ def create_app(
         )
         selected_path.parent.mkdir(parents=True, exist_ok=True)
         repository.initialize()
+        application.state.auth_service.workshop_directory = WorkshopDirectory(repository, auth_repository)
         yield
 
     app = FastAPI(
@@ -143,6 +150,33 @@ def create_app(
     )
     app.add_middleware(HttpAccessGate)
     app.state.repository = repository
+
+    @app.exception_handler(WorkshopAccessDenied)
+    async def workshop_denied(request, error):
+        return JSONResponse({"detail": "Permission denied"}, status_code=403,
+                            headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(PermissionDeniedError)
+    async def authorization_denied(request, error):
+        if request.url.path.startswith('/api/auth/'):
+            raise error  # Preserve the auth middleware's existing error/audit policy.
+        return JSONResponse({"detail": "Permission denied"}, status_code=403,
+                            headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(AuthenticationError)
+    async def authentication_denied(request, error):
+        if request.url.path.startswith('/api/auth/'):
+            raise error
+        return JSONResponse({"detail": "Authentication required"}, status_code=401,
+                            headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(sqlite3.DatabaseError)
+    async def business_unavailable(request, error):
+        if request.url.path.startswith('/api/auth/'):
+            raise error
+        return JSONResponse({"detail": "Business authorization unavailable"}, status_code=503,
+                            headers={"Cache-Control": "no-store"})
+
     register_auth_routes(app)
     app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
@@ -173,17 +207,20 @@ def create_app(
 
     @app.get("/api/works")
     def list_works(request: Request):
-        return request.app.state.repository.list_works()
+        context = _business_context(request, WorkshopPermission.READ_LABOUR_PLAN)
+        return request.app.state.repository.list_works(context=context)
 
     @app.post("/api/works", status_code=status.HTTP_201_CREATED)
     def create_work(payload: CreateWorkRequest, request: Request):
-        actor = _business_actor(request)
+        context = _business_context(request)
+        actor = context.actor
         try:
             return request.app.state.repository.create_work(
                 registration=payload.registration,
                 customer_description=payload.customer_description,
                 actor=actor,
                 idempotency_key=str(payload.idempotency_key),
+                context=context,
             )
         except IdempotencyConflictError as error:
             raise HTTPException(
@@ -196,14 +233,16 @@ def create_app(
 
     @app.get("/api/works/{work_id}")
     def get_work(work_id: str, request: Request):
+        context = _business_context(request, WorkshopPermission.READ_LABOUR_PLAN)
         try:
-            return request.app.state.repository.get_work(work_id)
+            return request.app.state.repository.get_work(work_id, context=context)
         except WorkNotFoundError as error:
             raise HTTPException(status_code=404, detail="Työtä ei löytynyt") from error
 
     @app.put("/api/works/{work_id}/labour")
     def record_labour(work_id: str, payload: RecordLabourRequest, request: Request):
-        actor = _business_actor(request)
+        context = _business_context(request)
+        actor = context.actor
         try:
             labour_time = LabourTime(
                 hours=payload.hours,
@@ -241,6 +280,7 @@ def create_app(
                 expected_version=payload.version,
                 labour=snapshot,
                 actor=actor,
+                context=context,
             )
         except WorkNotFoundError as error:
             raise HTTPException(status_code=404, detail="Työtä ei löytynyt") from error

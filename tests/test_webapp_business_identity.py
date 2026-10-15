@@ -53,7 +53,7 @@ def write(http, request):
 def persisted(http):
     with http.app.state.repository._connect() as connection:
         return {table: [tuple(row) for row in connection.execute("SELECT * FROM " + table)]
-                for table in ("work_inquiries", "work_events", "inquiry_creation_requests")}
+                for table in ("work_inquiries", "work_events", "scoped_inquiry_creation_requests")}
 
 
 def activity(http):
@@ -146,7 +146,7 @@ def test_same_user_retry_ignores_mutable_names_and_labels_and_returns_original_s
     assert create(http, {**body, "actor": "Untrusted changed label"}) == original
     assert persisted(http) == before
     with http.app.state.repository._connect() as connection:
-        fingerprint = json.loads(connection.execute("SELECT request_json FROM inquiry_creation_requests").fetchone()[0])
+        fingerprint = json.loads(connection.execute("SELECT request_json FROM scoped_inquiry_creation_requests").fetchone()[0])
     assert fingerprint == {"contract": "carbit.create-work.authenticated.v1", "actor_user_id": str(http.grant.user.user_id),
                            "registration": body["registration"], "customer_description": body["customer_description"]}
 
@@ -182,8 +182,8 @@ def test_legacy_idempotency_keys_fail_closed_and_historical_rows_stay_unchanged(
     assert updated.status_code == 200 and updated.json()["events"][1] == old["events"][0]
     with http.app.state.repository._connect() as connection:
         events = [tuple(row) for row in connection.execute("SELECT * FROM work_events ORDER BY id")]
-        requests = [tuple(row) for row in connection.execute("SELECT * FROM inquiry_creation_requests")]
-    assert events[:1] == before["work_events"] and requests == before["inquiry_creation_requests"]
+        requests = [tuple(row) for row in connection.execute("SELECT * FROM scoped_inquiry_creation_requests")]
+    assert events[:1] == before["work_events"] and requests == before["scoped_inquiry_creation_requests"]
 
 
 @pytest.mark.parametrize("same_user", [True, False])
@@ -204,7 +204,7 @@ def test_concurrent_key_reuse_is_atomic_and_identity_scoped(http, same_user):
     assert sorted(r.status_code for r in responses) == ([201, 201] if same_user else [201, 409])
     if same_user:
         assert responses[0].json() == responses[1].json()
-    assert len(persisted(http)["work_events"]) == len(persisted(http)["inquiry_creation_requests"]) == 1
+    assert len(persisted(http)["work_events"]) == len(persisted(http)["scoped_inquiry_creation_requests"]) == 1
 
 
 def test_event_insert_failure_rolls_back_authenticated_mutation_and_idle_refresh(http, write, monkeypatch):
@@ -369,7 +369,8 @@ def test_authenticated_workshop_key_reuse_by_another_user_conflicts_before_mutat
 def test_authenticated_workshop_cannot_replay_legacy_uuid_context_record(http, operation):
     work = create(http)
     service = LabourPlanService(http.app.state.repository)
-    legacy = TrustedWorkshopContext(str(http.grant.user.user_id), frozenset(WorkshopPermission))
+    from dataclasses import replace
+    legacy = replace(resolve_workshop_context(http.app.state.auth_service, http.cookies.get(SESSION_COOKIE), required_permission=WorkshopPermission.SAVE_LABOUR_PLAN), actor=None)
     command = save_command(work["id"])
     if operation == "approve":
         command = approval(service.save_plan(legacy, command))

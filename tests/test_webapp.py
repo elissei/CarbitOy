@@ -344,7 +344,7 @@ def test_new_events_include_resulting_work_version(tmp_path):
 
 def test_work_and_events_share_a_read_snapshot(tmp_path, monkeypatch):
     import sqlite3
-    from webapp.database import WorkRepository
+    from workshop_support import ScopedTestRepository as WorkRepository
 
     database = tmp_path / "test.db"
     repository = WorkRepository(database)

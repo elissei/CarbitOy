@@ -5,7 +5,7 @@ import pytest
 
 import webapp.auth_repository as auth_storage
 from webapp.auth_repository import AuthRepository
-from webapp.database import WorkRepository
+from workshop_support import ScopedTestRepository as WorkRepository
 
 
 def test_new_schema_and_repeatable_initialization(tmp_path):

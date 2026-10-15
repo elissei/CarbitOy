@@ -18,7 +18,8 @@ from services.labour_pricing import calculate_labour_cost, split_inclusive_vat
 from webapp.approved_labour_pricing import (
     ApprovedLabourPriceSnapshot, ApprovedLabourPricingRequest, ApprovedLabourPricingService,
 )
-from webapp.database import VersionConflictError, WorkRepository
+from webapp.database import VersionConflictError
+from workshop_support import ScopedTestRepository as WorkRepository
 from webapp.labour_models import OriginalWorkTimeRecord
 from webapp.labour_service import (
     ApproveLabourPlanCommand, LabourPlanService, SaveLabourPlanCommand,
@@ -28,7 +29,8 @@ from http_auth_support import create_test_app as create_app
 
 
 # Test-only identity; production authentication/context issuance is not supplied.
-CONTEXT = TrustedWorkshopContext("pricing-test-employee", frozenset(WorkshopPermission))
+from workshop_support import test_context
+CONTEXT = test_context("pricing-test-employee")
 
 
 @pytest.fixture
@@ -300,7 +302,7 @@ def test_request_forbids_client_hours_money_and_identity(environment, field, val
 def test_pricing_requires_trusted_read_permission_without_approval_permission(environment):
     _, plans, pricing, inquiry_id = environment
     approved = plans.approve_plan(CONTEXT, approval(save_plan(plans, inquiry_id)))
-    reader = TrustedWorkshopContext("trusted-reader", frozenset({WorkshopPermission.READ_LABOUR_PLAN}))
+    reader = test_context("trusted-reader", frozenset({WorkshopPermission.READ_LABOUR_PLAN}))
     assert pricing.price_approved_labour(reader, request(approved)).total_price == Decimal("324.00")
     for untrusted in ({"employee_id": "browser", "permissions": ["READ_LABOUR_PLAN"]},
                       TrustedWorkshopContext("no-permission", frozenset())):

@@ -10,6 +10,7 @@ from http_auth_support import TEST_PASSWORD, grant_session
 from webapp.auth_service import AuthenticationError, TrustedClientContext
 from test_webapp_browser import browser, local_app, page, seed, open_work, fill_inquiry, fill_labour, wait_for_held
 from webapp.auth_models import UserRole
+from workshop_support import TEST_WORKSHOP
 
 
 @pytest.fixture
@@ -357,6 +358,8 @@ def test_existing_single_use_recovery_code_can_complete_mfa(anonymous_page, loca
     app = local_app
     service = app.auth_service
     user = service.provision_identity(username="test.recovery", display_name="Fictional recovery user", role=UserRole.OWNER, password=TEST_PASSWORD)
+    service.workshop_directory.grant_membership(user.user_id, TEST_WORKSHOP,
+        operator_reference="Explicit recovery-browser fixture membership")
     client = TrustedClientContext("offline-test-enrollment")
     challenge = service.begin_login(user.username, TEST_PASSWORD, client=client)
     token = challenge.token.get_secret_value()

@@ -1,17 +1,12 @@
 """Token-only adapter for server callers; never deserialize request identities."""
 
-from types import MappingProxyType
-
 from webapp.auth_models import IdentityKind, UserRole
 from webapp.auth_service import AuthService, AuthenticationError, PermissionDeniedError
 from webapp.business_identity import BusinessActor
 from webapp.labour_service import TrustedWorkshopContext, WorkshopPermission
-
-
-_READ = frozenset({WorkshopPermission.READ_LABOUR_PLAN})
-_WRITE = _READ | {WorkshopPermission.SAVE_LABOUR_PLAN, WorkshopPermission.APPROVE_LABOUR_PLAN}
-_PERMISSIONS = MappingProxyType({UserRole.OWNER: _WRITE, UserRole.SERVICE_MANAGER: _WRITE,
-                               UserRole.IT_ADMIN: _READ})
+from webapp.workshop_repository import WorkshopDirectory
+from webapp.workshop_context import permissions_for_role
+from webapp.business_authorization import WorkshopAuthBinding
 
 
 def resolve_workshop_context(
@@ -25,13 +20,20 @@ def resolve_workshop_context(
     """
     if not isinstance(required_permission, WorkshopPermission):
         raise PermissionDeniedError("workshop permission denied")
-    user = service.inspect_session(session_token).user
+    session = service.inspect_session(session_token)
+    user = session.user
     if not user.enabled or not user.mfa_enabled or user.kind != IdentityKind.HUMAN:
         raise AuthenticationError("authentication required")
-    permissions = _PERMISSIONS.get(user.role, frozenset())
+    permissions = permissions_for_role(user.role)
     if required_permission not in permissions:
         raise PermissionDeniedError("workshop permission denied")
+    directory = getattr(service, "workshop_directory", None)
+    if not isinstance(directory, WorkshopDirectory):
+        raise PermissionDeniedError("workshop access denied")
+    membership = directory.resolve(user.user_id)
     return TrustedWorkshopContext(
         employee_id=str(user.user_id), permissions=permissions,
         actor=BusinessActor(user.user_id, user.display_name),
+        auth_binding=WorkshopAuthBinding(service, session.session_id),
+        **membership,
     )

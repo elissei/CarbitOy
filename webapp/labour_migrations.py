@@ -256,6 +256,8 @@ def apply_labour_migrations(connection: sqlite3.Connection) -> None:
     applied = {row[0] for row in connection.execute(
         "SELECT version FROM webapp_schema_migrations"
     )}
+    if applied not in (set(), {1}, {1, 2}):
+        raise RuntimeError("unknown or incomplete labour schema version")
     for version, statements in MIGRATIONS:
         if version in applied:
             continue
