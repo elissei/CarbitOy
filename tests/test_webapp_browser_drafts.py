@@ -384,13 +384,13 @@ def test_user_change_clears_private_editor_list_and_enforces_roles(page, local_a
     assert page.locator("#draft-list").inner_text() == ""
     assert "Edellisen käyttäjän" not in page.locator("body").inner_text()
     response = page.request.get(local_app[0] + "/api/drafts/" + draft_id)
-    assert response.status == (403 if role == UserRole.IT_ADMIN else 404)
+    assert response.status == (403 if role == UserRole.IT_ADMIN else 200)
     if role == UserRole.IT_ADMIN:
         expect(page.locator("#inquiry-drafts")).to_be_hidden()
         expect(page.locator("#new-work-button")).to_be_hidden()
     else:
         page.locator("#draft-list-refresh").click()
-        expect(page.locator("#draft-list-message")).to_contain_text("Ei omia")
+        expect(page.locator(f'[data-draft-id="{draft_id}"]')).to_be_visible()
         page.locator("#new-work-button").click()
         form(page, "customer_description").fill("Uuden käyttäjän oma luonnos")
         save(page)
@@ -647,3 +647,145 @@ def test_late_open_response_after_logout_cannot_restore_cleared_editor(page, loc
     assert form(page, "customer_description").input_value() == ""
     assert not page.locator("#new-work-dialog").evaluate("d => d.open")
     assert "Uloskirjautumisen jälkeen piilossa" not in page.locator("body").inner_text()
+
+
+@pytest.fixture
+def other_staff(browser,local_app):
+    grant=grant_session(local_app.auth_service,role=UserRole.SERVICE_MANAGER)
+    context=browser.new_context(viewport={'width':1280,'height':900},ignore_https_errors=True)
+    context.add_cookies([{'name':SessionCookiePolicy().name,'value':grant.token.get_secret_value(),
+        'url':local_app[0],'secure':True,'httpOnly':True,'sameSite':'Strict'}])
+    tab=context.new_page()
+    try:yield tab,grant
+    finally:
+        tab.unroute_all(behavior='ignoreErrors')
+        context.close()
+
+
+@pytest.mark.parametrize('creator_role',['OWNER','SERVICE_MANAGER'])
+def test_two_staff_real_browser_share_edit_conflict_noop_and_existing_discard(page,local_app,other_staff,creator_role,tmp_path):
+    from test_webapp_draft_service import authors
+    second_tab,staff=other_staff
+    first,second=(page,second_tab) if creator_role=='OWNER' else (second_tab,page)
+    owner=user_for(local_app)
+    creator_id=str(owner.user_id if creator_role=='OWNER' else staff.user.user_id)
+    editor_id=str(staff.user.user_id if creator_role=='OWNER' else owner.user_id)
+    start(first,local_app,'Yhteinen alkuperäinen','TEST-SHARED')
+    did=save(first)
+    second.goto(local_app[0],wait_until='networkidle')
+    open_saved(second,did)
+    expect(second.locator('#draft-list-title')).to_have_text('Korjaamon tiedusteluluonnokset')
+    expect(form(second,'customer_description')).to_have_value('Yhteinen alkuperäinen')
+    form(second,'customer_description').fill('Kollegan tallennettu muutos')
+    save(second)
+    assert authors(local_app[1],did)==(creator_id,editor_id)
+    form(first,'customer_description').fill('Konfliktissa säilyvä oma teksti')
+    first.locator('#draft-save').click()
+    expect(first.locator('#draft-message')).to_contain_text('Versioristiriita')
+    expect(form(first,'customer_description')).to_have_value('Konfliktissa säilyvä oma teksti')
+    assert stored(local_app,did)[0]['customer_description']=='Kollegan tallennettu muutos'
+    first.once('dialog',lambda dialog:dialog.accept())
+    first.locator('#draft-reload').click()
+    expect(form(first,'customer_description')).to_have_value('Kollegan tallennettu muutos')
+    form(first,'customer_description').fill('Luojan seuraava tietoinen muutos')
+    save(first)
+    open_saved(second,did)
+    before=stored(local_app,did)
+    save(second)  # Another staff member's no-op must not become the editor.
+    assert stored(local_app,did)==before
+    assert authors(local_app[1],did)==(creator_id,creator_id)
+    second.screenshot(path=str(tmp_path/'shared-workshop-draft.png'),full_page=True)
+    result=mutation(second,f'/api/drafts/{did}/discard','POST',{'request_id':str(uuid4()),'expected_revision':3})
+    assert result['state']=='DISCARDED' and stored(local_app,did) is None
+    assert authors(local_app[1],did)==(creator_id,creator_id)
+    close(first)
+    with first.expect_response(lambda r:'/api/drafts?limit=100' in r.url):first.locator('#draft-list-refresh').click()
+    expect(first.locator('.draft-row')).to_have_count(0)
+    for tab in (first,second):assert tab.evaluate('localStorage.length===0 && sessionStorage.length===0')
+
+
+def test_lost_original_save_after_colleague_edit_keeps_new_content_author_and_local_text(page,local_app,other_staff):
+    from test_webapp_draft_service import authors
+    other,staff=other_staff
+    start(page,local_app,'Alku','TEST-REPLAY')
+    did=save(page);path=f'/api/drafts/{did}';lost=[]
+    def lose(route):
+        if route.request.method=='PUT':
+            response=route.fetch();assert response.ok
+            lost.append(route.request.post_data_json);route.abort('failed')
+        else:route.continue_()
+    page.route('**'+path,lose)
+    form(page,'customer_description').fill('Alkuperäinen epäselvä tallennus')
+    page.locator('#draft-save').click()
+    expect(page.locator('#draft-message')).to_contain_text('tulos jäi epäselväksi')
+    page.unroute('**'+path,lose)
+    form(page,'customer_description').fill('Myöhempi oma tallentamaton teksti')
+    other.goto(local_app[0],wait_until='networkidle');open_saved(other,did)
+    expect(form(other,'customer_description')).to_have_value('Alkuperäinen epäselvä tallennus')
+    form(other,'customer_description').fill('Kollegan uudempi sisältö')
+    save(other)
+    before=stored(local_app,did)
+    with local_app[1]._connect() as c:receipt_count=c.execute('SELECT count(*) FROM draft_request_receipts').fetchone()[0]
+    with page.expect_response(lambda r:r.request.method=='PUT' and path in r.url) as response:
+        page.locator('#draft-retry').click()
+    assert response.value.json()['revision']==2
+    assert response.value.request.post_data_json==lost[0]
+    expect(page.locator('#draft-message')).to_contain_text('Palvelimella on toinen sisältöversio')
+    expect(form(page,'customer_description')).to_have_value('Myöhempi oma tallentamaton teksti')
+    expect(page.locator('#draft-save')).to_be_disabled()
+    assert stored(local_app,did)==before and before[1]==3
+    assert authors(local_app[1],did)[1]==str(staff.user.user_id)
+    with local_app[1]._connect() as c:assert c.execute('SELECT count(*) FROM draft_request_receipts').fetchone()[0]==receipt_count
+
+
+def test_departed_creator_is_denied_while_colleague_can_continue_and_discard(page,local_app,other_staff):
+    from test_webapp_draft_service import authors
+    other,staff=other_staff
+    start(page,local_app,'Säilyy korjaamolla','TEST-DEPART')
+    did=save(page);creator=user_for(local_app)
+    directory=local_app.auth_service.workshop_directory
+    workshop=directory.resolve(creator.user_id)['workshop_id']
+    directory.revoke_membership(creator.user_id,workshop,operator_reference='Fictional browser staff departure')
+    assert page.request.get(local_app[0]+f'/api/drafts/{did}').status==403
+    other.goto(local_app[0],wait_until='networkidle');open_saved(other,did)
+    form(other,'customer_description').fill('Aktiivisen kollegan jatkama')
+    save(other)
+    assert authors(local_app[1],did)==(str(creator.user_id),str(staff.user.user_id))
+    assert mutation(other,f'/api/drafts/{did}/discard','POST',{'request_id':str(uuid4()),'expected_revision':2})['state']=='DISCARDED'
+    assert stored(local_app,did) is None
+    assert authors(local_app[1],did)==(str(creator.user_id),str(staff.user.user_id))
+
+
+def test_identity_switch_clears_unknown_request_but_new_staff_can_fetch_shared_saved_text(page,local_app,other_staff):
+    other,staff=other_staff
+    requests=[]
+    def lose(route):
+        if route.request.method=='POST':
+            response=route.fetch();assert response.ok
+            requests.append((route.request.post_data_json,response.json()));route.abort('failed')
+        else:route.continue_()
+    start(page,local_app,'Vain tämä teksti tallentui','TEST-CHANGE')
+    page.route('**/api/drafts',lose)
+    page.locator('#draft-save').click()
+    expect(page.locator('#draft-message')).to_contain_text('tulos jäi epäselväksi')
+    page.unroute('**/api/drafts',lose)
+    form(page,'customer_description').fill('Edellisen käyttäjän tallentamaton salainen teksti')
+    writes=[]
+    page.on('request',lambda r:writes.append(r.post_data) if r.method in ('POST','PUT') and '/api/drafts' in r.url else None)
+    page.context.add_cookies([{'name':SessionCookiePolicy().name,'value':staff.token.get_secret_value(),
+        'url':local_app[0],'secure':True,'httpOnly':True,'sameSite':'Strict'}])
+    page.evaluate('CarbitAuth.lock()');page.locator('#auth-check').click()
+    expect(page.locator('#business-shell')).to_be_visible()
+    assert form(page,'customer_description').input_value()==''
+    assert page.locator('#draft-list').inner_text()==''
+    expect(page.locator('#draft-retry')).to_be_hidden()
+    assert counts(local_app)==(1,0) and writes==[]
+    open_saved(page,requests[0][1]['draft_id'])
+    expect(form(page,'customer_description')).to_have_value('Vain tämä teksti tallentui')
+    assert 'Edellisen käyttäjän tallentamaton' not in page.locator('body').inner_text()
+    close(page)  # The real modal must close before the header logout is clickable.
+    page.locator('#logout-button').click()
+    expect(page.locator('#business-shell')).to_be_hidden()
+    assert form(page,'customer_description').input_value()==''
+    assert page.locator('#draft-list').inner_text()==''
+    assert writes==[]

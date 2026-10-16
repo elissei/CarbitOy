@@ -306,6 +306,7 @@ def test_backup_receipts_require_restored_old_key_and_never_guess_legacy_key(htt
     legacy = WorkRepository(path)
     with monkeypatch.context() as scoped:
         scoped.setattr(migrations,'apply_migration_3',lambda *args:None)
+        scoped.setattr(migrations,'apply_migration_4',lambda *args:None)
         legacy.initialize()
     # Copy the test-only scope from the configured business DB, retaining its
     # auth store namespace. No real users/accounts/memberships are provisioned.
@@ -316,7 +317,7 @@ def test_backup_receipts_require_restored_old_key_and_never_guess_legacy_key(htt
                 marks=','.join('?' for _ in rows[0])
                 destination.executemany(f'INSERT INTO {table} VALUES ({marks})',map(tuple,rows))
     message = drafts.repository._message(resolved,'CREATE',dict(type='WORK_INQUIRY',payload={},work_id=None,original_work_version=None))
-    with legacy.operation(resolved,WorkshopPermission.WRITE_OWN_DRAFT,write=True) as c:
+    with legacy.operation(resolved,WorkshopPermission.WRITE_WORKSHOP_DRAFT,write=True) as c:
         draft_id = c.execute('''INSERT INTO draft_registry
             (organization_id,workshop_id,auth_store_id,owner_employee_id,draft_type)
             VALUES (?,?,?,?,'WORK_INQUIRY') RETURNING draft_id''',

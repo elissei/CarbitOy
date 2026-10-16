@@ -7,6 +7,7 @@ survive its removal until the configured post-termination metadata deadline.
 import sqlite3
 from datetime import datetime, timezone
 from webapp.draft_hardening_migrations import apply_migration_3
+from webapp.draft_shared_migrations import apply_migration_4
 
 
 RETENTION_SECONDS = 7 * 24 * 60 * 60
@@ -315,11 +316,12 @@ def apply_draft_migrations(connection: sqlite3.Connection) -> None:
         version INTEGER PRIMARY KEY NOT NULL CHECK(version>=1), applied_at TEXT NOT NULL
     )""")
     applied = {row[0] for row in connection.execute('SELECT version FROM draft_schema_migrations')}
-    if applied not in (set(), {1}, {1, 2}, {1, 2, 3}):
+    if applied not in (set(), {1}, {1, 2}, {1, 2, 3}, {1, 2, 3, 4}):
         raise RuntimeError('unknown or incomplete draft schema version')
     if 1 in applied:
         _apply_migration_2(connection, applied)
         apply_migration_3(connection, applied)
+        apply_migration_4(connection, applied)
         return
     for statement in SCHEMA:
         connection.execute(statement)
@@ -344,6 +346,7 @@ def apply_draft_migrations(connection: sqlite3.Connection) -> None:
                        (datetime.now(timezone.utc).isoformat(),))
     _apply_migration_2(connection, applied)
     apply_migration_3(connection, applied)
+    apply_migration_4(connection, applied)
 
 
 def _apply_migration_2(connection, applied):

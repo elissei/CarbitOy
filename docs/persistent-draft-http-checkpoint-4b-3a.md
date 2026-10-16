@@ -1,5 +1,12 @@
 # CP4B-3A: yksityisten luonnosten HTTP API
 
+> **Myöhempi yhteiskäyttömuutos (skeema 4):** tämän alkuperäisen checkpointin
+> omistajakohtainen sisältöraja korvautuu [korjaamon yhteisillä luonnoksilla](shared-workshop-drafts.md).
+> OWNER ja SERVICE_MANAGER voivat listata, avata, muokata ja hylätä saman korjaamon
+> luonnoksia. Pyynnöt ja kuitit pysyvät henkilökohtaisina. Alkuperäistä checkpointia
+> ei väitetä yhteiskäyttöiseksi; muut transport-, payload- ja kuittivastauksen
+> sopimukset säilyvät alla kuvatusti.
+
 Tämä checkpoint avaa [CP4B-2B:n kovennetun palvelun](persistent-draft-hardening-checkpoint-4b-2b.md)
 HTTP-transportin. Se ei toteuta selainta/autosavea, muunnosta, labour submissionia,
 CRM-, Autodata- tai OpenClaw-integraatioita. Tekniset luonnoskuitit eivät ole

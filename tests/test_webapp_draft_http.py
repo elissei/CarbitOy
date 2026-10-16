@@ -131,7 +131,7 @@ def test_labour_draft_preserves_parent_version_without_submission(http):
     assert http.post('/api/drafts',json=invalid,headers=business_headers(http)).status_code==409
 
 
-@pytest.mark.parametrize('index',[0,1,2])
+@pytest.mark.parametrize('index',[1,2])
 def test_other_owner_workshop_and_organization_are_indistinguishable_from_absent(http,index):
     own=new(http,body(payload={'customer_description':'Private fictional customer'}))
     other=grant_session(http.app.state.auth_service,membership=False)
@@ -193,6 +193,7 @@ def test_ambiguous_security_headers_do_not_reach_domain(http,operation,name):
 
 @pytest.mark.parametrize('change',[
     {'owner_employee_id':'forged'}, {'employee_id':'forged'}, {'organization_id':'forged'},
+    {'requester_employee_id':'forged'}, {'content_changed':1},
     {'workshop_id':'forged'}, {'request_id':'not-a-uuid'}, {'request_id':123},
     {'draft_type':'UNKNOWN'}, {'payload':[]}, {'payload':{'registration':123}},
     {'payload':{'customer_description':'x'*4001}}, {'payload':{'password':'DO NOT ECHO'}},
@@ -511,7 +512,8 @@ def test_service_manager_requires_explicit_membership_then_can_use_own_drafts(ht
                      headers=business_headers(http)).status_code==200
 
 
-def test_default_startup_closes_draft_http_after_real_lifespan(http,tmp_path,monkeypatch,journal):
+@pytest.mark.parametrize('role',[UserRole.OWNER,UserRole.SERVICE_MANAGER])
+def test_default_startup_closes_draft_http_after_real_lifespan(http,tmp_path,monkeypatch,journal,role):
     # Exercise the real environment default, not DraftApiSettings(enabled=False)
     # or an app.state replacement. Unused malformed keys must remain unused.
     monkeypatch.delenv('CARBIT_DRAFT_API_ENABLED',raising=False)
@@ -527,7 +529,7 @@ def test_default_startup_closes_draft_http_after_real_lifespan(http,tmp_path,mon
         with app.state.repository._connect() as connection,connection:
             connection.execute('INSERT INTO repair_organizations VALUES (?,?,1)',(organization,'Fictional default'))
             connection.execute("INSERT INTO workshops VALUES (?,?,?,'ACTIVE')",(workshop,organization,'Only workshop'))
-        grant=grant_session(app.state.auth_service,membership=False)
+        grant=grant_session(app.state.auth_service,role=role,membership=False)
         app.state.auth_service.workshop_directory.grant_membership(grant.user.user_id,workshop,
             operator_reference='Explicit fictional default-startup membership')
         client.cookies.set(SESSION_COOKIE,grant.token.get_secret_value())
@@ -655,3 +657,46 @@ def test_competing_save_discard_serializes_without_resurrecting_content(http,mon
         assert connection.execute('SELECT reason FROM draft_terminations WHERE draft_id=?',
                                   (row['draft_id'],)).fetchone()[0]=='DISCARDED'
     assert snapshot(repository.database_path)==after_race
+
+
+@pytest.mark.parametrize('kind',['WORK_INQUIRY','LABOUR_ENTRY'])
+def test_shared_staff_http_lifecycle_and_nonce_namespaces(http,kind):
+    from test_webapp_draft_service import authors
+    creator=http.grant
+    request_id=str(uuid4())
+    payload={'registration':'A'} if kind=='WORK_INQUIRY' else {'hours':'unfinished'}
+    creation={'draft_type':kind,'request_id':request_id,'payload':payload}
+    if kind=='LABOUR_ENTRY':
+        target=create(http)
+        creation.update(work_id=target['id'],original_work_version=target['version'])
+    first=new(http,creation)
+    other=grant_session(http.app.state.auth_service,role=UserRole.SERVICE_MANAGER,membership=False)
+    http.app.state.auth_service.workshop_directory.grant_membership(other.user.user_id,http.workshops[0],
+        operator_reference='Fictional shared HTTP staff')
+    http.cookies.set(SESSION_COOKIE,other.token.get_secret_value())
+    assert [r['draft_id'] for r in http.get('/api/drafts').json()]==[first['draft_id']]
+    assert http.get('/api/drafts/'+first['draft_id']).json()['payload']==payload
+    independent=new(http,creation)
+    assert independent['draft_id']!=first['draft_id']
+    path='/api/drafts/'+first['draft_id']
+    changed={'registration':'B'} if kind=='WORK_INQUIRY' else {'hours':'1.50'}
+    save_key=str(uuid4())
+    saved={'request_id':save_key,'expected_revision':1,'payload':changed}
+    assert http.put(path,json=saved,headers=business_headers(http)).status_code==200
+    assert authors(http.app.state.repository,first['draft_id'])==(str(creator.user.user_id),str(other.user.user_id))
+    http.cookies.set(SESSION_COOKIE,creator.token.get_secret_value())
+    noop={'request_id':save_key,'expected_revision':2,'payload':changed}
+    result=http.put(path,json=noop,headers=business_headers(http))
+    assert result.status_code==200 and result.json()['revision']==2
+    assert authors(http.app.state.repository,first['draft_id'])[1]==str(other.user.user_id)
+    before=snapshot(http.app.state.repository.database_path)
+    assert http.put(path,json=noop,headers=business_headers(http)).json()==result.json()
+    assert snapshot(http.app.state.repository.database_path)==before
+    http.cookies.set(SESSION_COOKIE,other.token.get_secret_value())
+    discard={'request_id':str(uuid4()),'expected_revision':2}
+    response=http.post(path+'/discard',json=discard,headers=business_headers(http))
+    assert response.status_code==200 and response.json()['state']=='DISCARDED'
+    assert http.post(path+'/discard',json=discard,headers=business_headers(http)).json()==response.json()
+    http.cookies.set(SESSION_COOKIE,creator.token.get_secret_value())
+    assert http.post(path+'/discard',json=discard,headers=business_headers(http)).status_code==404
+    assert authors(http.app.state.repository,first['draft_id'])==(str(creator.user.user_id),str(other.user.user_id))

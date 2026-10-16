@@ -121,7 +121,7 @@ function CarbitInquiryDrafts({ api, form, dialog, workBusy }) {
     if (!CarbitAuth.canWrite()) return;
     const current = ++listEpoch;
     refresh.disabled = true;
-    listMessage.textContent = "Haetaan omia luonnoksia…";
+    listMessage.textContent = "Haetaan korjaamon luonnoksia…";
     try {
       const values = await api("/api/drafts?limit=100");
       if (current !== listEpoch) return;
@@ -136,7 +136,7 @@ function CarbitInquiryDrafts({ api, form, dialog, workBusy }) {
       }
       listMessage.textContent = values.length === 100
         ? "Lista on rajattu palvelimen 100 luonnokseen, myös työaikaluonnokset lasketaan rajaan. Kaikki tiedusteluluonnokset eivät välttämättä näy."
-        : list.childElementCount ? "Valitse luonnos jatkaaksesi. Vain käsin tallennettu versio säilyy." : "Ei omia aktiivisia tiedusteluluonnoksia.";
+        : list.childElementCount ? "Valitse luonnos jatkaaksesi. Vain käsin tallennettu versio säilyy." : "Ei korjaamon aktiivisia tiedusteluluonnoksia.";
     } catch (problem) {
       if (current === listEpoch) listMessage.textContent = readError(problem);
     } finally {

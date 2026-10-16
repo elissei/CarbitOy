@@ -2,8 +2,10 @@
 
 Yhden korjaamon työntekijä voi tallentaa keskeneräisen WORK_INQUIRY-tiedustelun
 nykyisellä [DRAFT-API:lla](persistent-draft-http-checkpoint-4b-3a.md).
-OWNER ja SERVICE_MANAGER käsittelevät vain omia luonnoksiaan nykyisen
-kirjautumisen, MFA:n ja korjaamojäsenyyden perusteella.
+OWNER ja SERVICE_MANAGER voivat listata, avata, muokata ja nykyisellä API:lla
+hylätä oman korjaamonsa yhteisiä luonnoksia. Kirjautuminen, MFA ja aktiivinen
+korjaamojäsenyys vaaditaan. [Yhteiskäytön sopimus](shared-workshop-drafts.md)
+erottaa yhteisen sisällön henkilökohtaisista uusintapyynnöistä.
 
 ## Kokeilu ja käyttö
 
@@ -18,7 +20,7 @@ Suljettu tai tavoittamaton palvelu näyttää virheen ja säilyttää lomakkeen 
    Kentät saavat olla vielä keskeneräisiä. Valitse **Tallenna luonnos**.
 2. Odota tallennuksen vahvistusta. Vain käsin tallennettu sisältö säilyy
    palvelimella; myöhemmät muokkaukset jäävät tallentamatta seuraavaan painallukseen.
-3. Sulje lomake ja valitse **Näytä / päivitä luonnokset**. Valitse oma luonnos
+3. Sulje lomake ja valitse **Näytä / päivitä luonnokset**. Valitse korjaamon luonnos
    jatkaaksesi. Tämä toimii myös sivun lataamisen tai uuden kirjautumisen jälkeen.
 4. Muokkaa ja tallenna samalla painikkeella. Tallennus käyttää luettua revisionia.
    Toisen luonnoksen tai palvelinversion avaaminen pyytää luvan korvata
@@ -29,7 +31,7 @@ joukosta. Myös LABOUR_ENTRYt lasketaan API-rajaan. Rajan täyttyessä käyttöl
 ilmoittaa, ettei luettelo välttämättä sisällä kaikkia tiedusteluluonnoksia.
 Tässä ei lisätä palvelimen suodatusta tai sivutusta.
 
-## Tallennus, virheet ja yksityisyys
+## Tallennus, virheet ja käyttäjäkohtainen selainmuisti
 
 - Seitsemän päivän sisältösäilytys alkaa viimeisestä hyväksytystä sisältömuutoksesta.
   Lukeminen, muuttumaton tallennus ja uusintakuitti eivät jatka aikaa.
@@ -49,7 +51,7 @@ Tässä ei lisätä palvelimen suodatusta tai sivutusta.
   ole nykyisen sisällön todiste. Jos sisältö on välillä muuttunut, tarvitaan käyttäjän
   valitsema palvelinversion avaus. Ei automaattisia kirjoitusten uusintoja.
 - Epäselvän pyynnön käsinuusinta lopetetaan viimeistään vuorokauden kohdalla
-  (palvelimen metadatasäilytyksen vähimmäisaika). Tarkista silloin oma lista.
+  (palvelimen metadatasäilytyksen vähimmäisaika). Tarkista silloin korjaamon lista.
   Sivun reload kadottaa muistissa olevan epäselvän pyynnön; tarkista lista ennen
   uuden luonnoksen luomista. Käyttöliittymä ei lupaa sivujen yli jatkuvaa uusintaa.
 - Vanhentunutta tai hylättyä luonnosta ei luoda automaattisesti uudelleen.
@@ -58,6 +60,10 @@ Tässä ei lisätä palvelimen suodatusta tai sivutusta.
   tyhjentävät edellisen käyttäjän lomakkeen, listan ja uusintapyynnön muistista.
   Sisältöä ei tallenneta localStorageen, sessionStorageen tai muuhun pysyvään
   selainvarastoon. Tallentamattomat muutokset menetetään reloadissa.
+  Uusi saman korjaamon käyttäjä hakee yhteiset tallennetut luonnokset uudelleen;
+  edellisen käyttäjän tallentamaton teksti tai alkuperäinen uusintapyyntö ei siirry.
+- Luojan jäsenyyden päättyminen ei piilota luonnosta muulta aktiiviselta
+  henkilöstöltä. Poistuneen käyttäjän pääsy estetään ja nykyinen expiry säilyy.
 
 ## Rajaus ja testit
 
@@ -68,8 +74,9 @@ uusi tiedustelu käyttääksesi nykyistä polkua; luonnos säilyy palvelimella.
 
 Ei autosavea, LABOUR_ENTRY-editoria, discard-UI:ta, muunnosta, lopullista työajan
 lähetystä, hyväksyntää, integraatioita, WD-3:a, SEC-2B:tä tai uusia monen korjaamon
-ominaisuuksia. Backendin sisältö-, käyttöoikeus-, revision- ja retention-sopimus
-säilyy. Aiemmat README-, käyttöönottovarmennus- ja SEC-varaukset säilyvät;
+ominaisuuksia. Backendin käyttöoikeusraja on nyt korjaamon yhteinen; sisältö-, revision- ja
+retention-sopimus säilyy. Luoja ei vaihdu, todellisen sisältömuutoksen tekijä
+kirjataan, eikä muuttumaton tallennus tai kuittiuusinta vaihda viimeistä muokkaajaa. Aiemmat README-, käyttöönottovarmennus- ja SEC-varaukset säilyvät;
 tämä ei vahvista DRAFTin alkuperäistä hyväksyntää tai tuotantovalmiutta.
 
 `tests/test_webapp_browser_drafts.py` käyttää oikeaa Chromiumia ja sovelluksen

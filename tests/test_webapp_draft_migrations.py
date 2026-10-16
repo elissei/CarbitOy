@@ -163,7 +163,7 @@ def test_migration_requires_transaction_and_security_pragmas(tmp_path, setting):
         assert not connection.execute("SELECT name FROM sqlite_master WHERE name LIKE 'draft_%'").fetchall()
 
 
-@pytest.mark.parametrize('version', [4, 99])
+@pytest.mark.parametrize('version', [5, 99])
 def test_unknown_draft_version_refuses_startup(repository, version):
     with repository._connect() as connection, connection:
         connection.execute('INSERT INTO draft_schema_migrations VALUES (?,?)', (version, 'test'))
@@ -377,7 +377,7 @@ def test_revocation_hides_active_content_and_operation_still_denies(repository, 
             connection.execute('UPDATE repair_organizations SET enabled=0 WHERE organization_id=?',(CTX.organization_id,))
         else:
             connection.execute("UPDATE workshops SET status='INACTIVE' WHERE workshop_id=?",(CTX.workshop_id,))
-        assert not connection.execute('SELECT * FROM active_drafts').fetchall()
+        assert bool(connection.execute('SELECT * FROM active_drafts').fetchall()) is (change=='membership')
     with pytest.raises(WorkshopAccessDenied):
         with repository.operation(CTX, PERMISSION, write=True):
             pytest.fail('revocation must deny access before business writes')

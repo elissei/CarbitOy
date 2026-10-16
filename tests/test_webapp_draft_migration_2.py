@@ -16,6 +16,7 @@ def version_one(tmp_path, monkeypatch):
     with monkeypatch.context() as legacy:
         legacy.setattr(migrations,'_apply_migration_2',lambda *args:None)
         legacy.setattr(migrations,'apply_migration_3',lambda *args:None)
+        legacy.setattr(migrations,'apply_migration_4',lambda *args:None)
         repository.initialize()
     seed_test_scope(repository)
     with repository.operation(CTX,PERMISSION,write=True) as connection:
@@ -34,7 +35,7 @@ def test_version_two_preserves_legacy_content_receipts_metadata_and_repeated_upg
         if table!='draft_schema_migrations':
             assert after[table]==rows
     assert after['draft_schema_migrations'][0]==before['draft_schema_migrations'][0]
-    assert {row[0] for row in after['draft_schema_migrations']}=={1,2,3}
+    assert {row[0] for row in after['draft_schema_migrations']}=={1,2,3,4}
     assert after['draft_request_receipts']==[]  # No guessed legacy fingerprints.
     repository.initialize()
     assert snapshot(repository.database_path)==after

@@ -38,7 +38,7 @@ def drafts(http):
     return DraftService(DraftRepository(http.app.state.repository,keyring=KEYRING))
 
 
-def ctx(http, permission=WorkshopPermission.WRITE_OWN_DRAFT):
+def ctx(http, permission=WorkshopPermission.WRITE_WORKSHOP_DRAFT):
     return context(http,permission)
 
 
@@ -77,13 +77,13 @@ def test_create_read_list_are_private_and_do_not_change_business_records(http, d
     assert len(after['draft_audit_events'])==1
 
 
-@pytest.mark.parametrize('workshop_index', [0,1,2])
+@pytest.mark.parametrize('workshop_index', [1,2])
 def test_owner_workshop_and_organization_never_leak_content_or_existence(http, drafts, workshop_index):
     first = new(drafts,ctx(http),payload={'customer_description':'Private fictional customer text'})
     other = grant_session(http.app.state.auth_service,membership=False)
     directory(http).grant_membership(other.user.user_id,http.workshops[workshop_index],operator_reference='Test only')
     second_ctx = resolve_workshop_context(http.app.state.auth_service,other.token.get_secret_value(),
-                                         required_permission=WorkshopPermission.WRITE_OWN_DRAFT)
+                                         required_permission=WorkshopPermission.WRITE_WORKSHOP_DRAFT)
     own = new(drafts,second_ctx)
     assert [row.draft_id for row in drafts.list(second_ctx)]==[own.draft_id]
     before = snapshot(http.app.state.repository.database_path)
@@ -364,7 +364,7 @@ def test_internal_cleanup_is_bounded_owner_only_and_never_deletes_business(http,
         other = grant_session(http.app.state.auth_service,membership=False)
         directory(http).grant_membership(other.user.user_id,http.workshops[0],operator_reference='Explicit test membership')
         other_ctx = resolve_workshop_context(http.app.state.auth_service,other.token.get_secret_value(),
-                                             required_permission=WorkshopPermission.WRITE_OWN_DRAFT)
+                                             required_permission=WorkshopPermission.WRITE_WORKSHOP_DRAFT)
         foreign = new(drafts,other_ctx)
         clock[0] = rows[0].expires_at
         before = snapshot(http.app.state.repository.database_path)
@@ -435,7 +435,7 @@ def test_foreign_or_missing_labour_work_reference_returns_same_generic_error(htt
 def test_v1_creation_receipt_without_fingerprint_is_never_silently_adopted(http, drafts):
     resolved = ctx(http)
     key = str(uuid4())
-    with http.app.state.repository.operation(resolved,WorkshopPermission.WRITE_OWN_DRAFT,write=True) as connection:
+    with http.app.state.repository.operation(resolved,WorkshopPermission.WRITE_WORKSHOP_DRAFT,write=True) as connection:
         draft_id = connection.execute('''INSERT INTO draft_registry
             (organization_id,workshop_id,auth_store_id,owner_employee_id,draft_type)
             VALUES (?,?,?,?,'WORK_INQUIRY') RETURNING draft_id''',
@@ -455,15 +455,142 @@ def test_new_receipts_are_immutable_and_replacement_cannot_reset_them(http, draf
     resolved = ctx(http)
     new(drafts,resolved)
     before = snapshot(http.app.state.repository.database_path)
-    with http.app.state.repository.operation(resolved,WorkshopPermission.WRITE_OWN_DRAFT,write=True) as connection:
+    with http.app.state.repository.operation(resolved,WorkshopPermission.WRITE_WORKSHOP_DRAFT,write=True) as connection:
         for statement in ['UPDATE draft_request_receipts SET request_id=request_id',
                           'DELETE FROM draft_request_receipts',
                           '''INSERT OR REPLACE INTO draft_request_receipts
-                            (request_id,operation,draft_id,auth_store_id,owner_employee_id,workshop_id,draft_type,
-                            request_fingerprint,accepted_revision,accepted_last_content_saved_at,accepted_state,recorded_at)
-                            SELECT request_id,operation,draft_id,auth_store_id,owner_employee_id,workshop_id,draft_type,
-                            request_fingerprint,accepted_revision,accepted_last_content_saved_at,accepted_state,recorded_at
+                            (request_id,operation,draft_id,auth_store_id,requester_employee_id,workshop_id,draft_type,
+                            request_fingerprint,accepted_revision,accepted_last_content_saved_at,accepted_state,recorded_at,fingerprint_key_id,content_changed)
+                            SELECT request_id,operation,draft_id,auth_store_id,requester_employee_id,workshop_id,draft_type,
+                            request_fingerprint,accepted_revision,accepted_last_content_saved_at,accepted_state,recorded_at,fingerprint_key_id,content_changed
                             FROM draft_request_receipts''']:
             with pytest.raises(sqlite3.IntegrityError):
                 connection.execute(statement)
     assert snapshot(http.app.state.repository.database_path)==before
+
+
+def colleague(http, role='SERVICE_MANAGER'):
+    from webapp.auth_models import UserRole
+    grant = grant_session(http.app.state.auth_service,role=UserRole(role),membership=False)
+    directory(http).grant_membership(grant.user.user_id,http.workshops[0],operator_reference='Shared draft fictional staff')
+    resolved = resolve_workshop_context(http.app.state.auth_service,grant.token.get_secret_value(),
+                                       required_permission=WorkshopPermission.WRITE_WORKSHOP_DRAFT)
+    return resolved
+
+
+def authors(repository, draft_id):
+    with repository._connect() as c:
+        creator = c.execute('SELECT owner_employee_id FROM draft_registry WHERE draft_id=?',(draft_id,)).fetchone()[0]
+        last = c.execute('''SELECT requester_employee_id FROM draft_request_receipts
+            WHERE draft_id=? AND operation='SAVE' AND content_changed=1
+            ORDER BY accepted_revision DESC LIMIT 1''',(draft_id,)).fetchone()
+    return creator, last[0] if last else creator
+
+
+@pytest.mark.parametrize('kind',list(DraftType))
+@pytest.mark.parametrize('creator_role',['OWNER','SERVICE_MANAGER'])
+def test_workshop_staff_share_content_discard_and_keep_individual_receipts(http,drafts,kind,creator_role):
+    from webapp.auth_models import UserRole
+    first = ctx(http) if creator_role=='OWNER' else colleague(http,creator_role)
+    second = colleague(http,'SERVICE_MANAGER' if creator_role=='OWNER' else 'OWNER')
+    key = str(uuid4())
+    if kind==DraftType.WORK_INQUIRY:
+        original={'registration':'A'}
+        row=drafts.create_work_inquiry(first,request_id=key,payload=original)
+        changed={'registration':'B'}
+    else:
+        target=create(http)
+        original={'hours':'unfinished'};changed={'hours':'1.25'}
+        row=drafts.create_labour_entry(first,work_id=target['id'],original_work_version=target['version'],request_id=key,payload=original)
+    assert drafts.read(second,row.draft_id).payload==original
+    assert row.draft_id in [r.draft_id for r in drafts.list(second)]
+    save_key=str(uuid4())
+    saved=drafts.save(second,row.draft_id,expected_revision=1,request_id=save_key,payload=changed)
+    assert saved.revision==2
+    assert authors(http.app.state.repository,row.draft_id)==(first.employee_id,second.employee_id)
+    noop=drafts.save(first,row.draft_id,expected_revision=2,request_id=str(uuid4()),payload=changed)
+    assert noop.revision==2 and noop.expires_at==saved.expires_at and noop.last_content_saved_at==saved.last_content_saved_at
+    before=snapshot(http.app.state.repository.database_path)
+    assert drafts.save(second,row.draft_id,expected_revision=1,request_id=save_key,payload=changed)==saved
+    assert snapshot(http.app.state.repository.database_path)==before
+    assert authors(http.app.state.repository,row.draft_id)==(first.employee_id,second.employee_id)
+    discarded=drafts.discard(second,row.draft_id,expected_revision=2,request_id=str(uuid4()))
+    assert discarded.state=='DISCARDED' and discarded.revision==3
+    assert not drafts.list(first) and not drafts.list(second)
+    assert authors(http.app.state.repository,row.draft_id)==(first.employee_id,second.employee_id)
+    with pytest.raises(DraftNotFoundError):drafts.read(first,row.draft_id)
+
+
+@pytest.mark.parametrize('kind',list(DraftType))
+def test_creator_revocation_keeps_colleague_access_and_denies_original_replay(http,drafts,kind):
+    first,second=ctx(http),colleague(http)
+    key=str(uuid4())
+    if kind==DraftType.WORK_INQUIRY:
+        row=drafts.create_work_inquiry(first,request_id=key,payload={})
+    else:
+        target=create(http)
+        row=drafts.create_labour_entry(first,work_id=target['id'],original_work_version=target['version'],request_id=key,payload={})
+    directory(http).revoke_membership(first.employee_id,first.workshop_id,operator_reference='Fictional staff departure')
+    for operation in [lambda:drafts.list(first),lambda:drafts.read(first,row.draft_id),
+        lambda:drafts.save(first,row.draft_id,expected_revision=1,request_id=str(uuid4()),payload={}),
+        lambda:drafts.discard(first,row.draft_id,expected_revision=1,request_id=str(uuid4()))]:
+        with pytest.raises(WorkshopAccessDenied):operation()
+    with pytest.raises(WorkshopAccessDenied):
+        drafts.repository.create(first,draft_type=kind,request_id=key,payload={},
+            work_id=target['id'] if kind==DraftType.LABOUR_ENTRY else None,
+            original_work_version=target['version'] if kind==DraftType.LABOUR_ENTRY else None)
+    assert drafts.read(second,row.draft_id).revision==1
+    assert drafts.list(second)[0].draft_id==row.draft_id
+    payload={'registration':'B'} if kind==DraftType.WORK_INQUIRY else {'hours':'2'}
+    drafts.save(second,row.draft_id,expected_revision=1,request_id=str(uuid4()),payload=payload)
+    assert authors(http.app.state.repository,row.draft_id)==(first.employee_id,second.employee_id)
+    drafts.discard(second,row.draft_id,expected_revision=2,request_id=str(uuid4()))
+    assert authors(http.app.state.repository,row.draft_id)==(first.employee_id,second.employee_id)
+
+
+def test_shared_draft_retry_after_colleague_edit_never_restores_content_or_author(http,drafts):
+    first,second=ctx(http),colleague(http)
+    key=str(uuid4());a=new(drafts,first,key=key,payload={'registration':'A'})
+    b=new(drafts,second,key=key,payload={'registration':'OTHER'})
+    assert a.draft_id!=b.draft_id  # Same UUID is a different person's independent CREATE.
+    save_key=str(uuid4())
+    saved=drafts.save(first,a.draft_id,expected_revision=1,request_id=save_key,payload={'registration':'B'})
+    with pytest.raises(DraftRevisionConflictError):
+        drafts.save(second,a.draft_id,expected_revision=1,request_id=save_key,payload={'registration':'B'})
+    later=drafts.save(second,a.draft_id,expected_revision=2,request_id=save_key,payload={'registration':'C'})
+    assert later.revision==3
+    before=snapshot(http.app.state.repository.database_path)
+    assert drafts.save(first,a.draft_id,expected_revision=1,request_id=save_key,payload={'registration':'B'})==saved
+    assert snapshot(http.app.state.repository.database_path)==before
+    assert drafts.read(first,a.draft_id).payload=={'registration':'C'}
+    assert authors(http.app.state.repository,a.draft_id)==(first.employee_id,second.employee_id)
+    with pytest.raises(DraftIdempotencyConflictError):
+        drafts.save(first,a.draft_id,expected_revision=3,request_id=save_key,payload={'registration':'C'})
+
+
+@pytest.mark.parametrize('winner',[0,1])
+def test_two_staff_controlled_save_race_has_one_author_and_no_loser_receipt(http,drafts,monkeypatch,winner):
+    people=[ctx(http),colleague(http)];row=new(drafts,people[0]);entered,release,loser_started=Event(),Event(),Event()
+    original=DraftRepository._active
+    def observed(connection,resolved,draft_id):
+        found=original(connection,resolved,draft_id)
+        if resolved.employee_id==people[winner].employee_id:
+            entered.set();assert release.wait(5)
+        return found
+    monkeypatch.setattr(DraftRepository,'_active',staticmethod(observed))
+    keys=[str(uuid4()),str(uuid4())]
+    def save_person(i):
+        if i!=winner:loser_started.set()
+        return drafts.save(people[i],row.draft_id,expected_revision=1,request_id=keys[i],payload={'registration':str(i)})
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        win=pool.submit(save_person,winner)
+        try:
+            assert entered.wait(5)
+            lose=pool.submit(save_person,1-winner);assert loser_started.wait(5)
+        finally:release.set()
+        assert win.result().revision==2
+        with pytest.raises(DraftRevisionConflictError):lose.result()
+    assert drafts.read(people[0],row.draft_id).payload=={'registration':str(winner)}
+    assert authors(http.app.state.repository,row.draft_id)==(people[0].employee_id,people[winner].employee_id)
+    with http.app.state.repository._connect() as c:
+        assert not c.execute('SELECT 1 FROM draft_request_receipts WHERE request_id=?',(keys[1-winner],)).fetchone()

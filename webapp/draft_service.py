@@ -1,4 +1,4 @@
-"""Internal draft service. No HTTP, conversion, submission or collaboration."""
+"""Internal workshop-shared draft service. No conversion or submission."""
 
 from webapp.draft_models import DraftType
 from webapp.draft_repository import DraftRepository
@@ -7,7 +7,7 @@ from webapp.draft_repository import DraftRepository
 class DraftService:
     def __init__(self, repository: DraftRepository):
         if not isinstance(repository,DraftRepository):
-            raise TypeError('a private draft repository is required')
+            raise TypeError('a draft repository is required')
         self.repository = repository
 
     def create_work_inquiry(self, context, *, request_id, payload):

@@ -1,4 +1,4 @@
-"""Authenticated owner-only SQLite draft operations; auth -> business ordering.
+"""Authenticated workshop-shared SQLite draft operations; auth -> business ordering.
 
 The explicitly configured keyring stays out of storage/repr. Retired keys remain
 available while active drafts and retained historical receipts require them.
@@ -19,11 +19,16 @@ from webapp.draft_models import (
 from webapp.workshop_context import TrustedWorkshopContext, WorkshopAccessDenied, WorkshopPermission
 
 
-SCOPE = 'organization_id=? AND workshop_id=? AND auth_store_id=? AND owner_employee_id=?'
+DRAFT_SCOPE = 'organization_id=? AND workshop_id=? AND auth_store_id=?'
 
 
-def _scope(context):
-    return context.organization_id,context.workshop_id,context.auth_store_id,context.employee_id
+def _draft_scope(context):
+    return context.organization_id,context.workshop_id,context.auth_store_id
+
+
+def _request_scope(context):
+    # Keep the original HMAC scope order and per-person nonce namespace.
+    return *_draft_scope(context),context.employee_id
 
 
 def _uuid(value, *, unavailable=False):
@@ -54,11 +59,11 @@ class DraftRepository:
 
     @contextmanager
     def _operation(self, context, *, write=False):
-        # No legacy offline-context fallback for private drafts.
+        # No legacy offline-context fallback for shared drafts.
         if (not isinstance(context,TrustedWorkshopContext) or context.actor is None
                 or not isinstance(context.auth_binding,WorkshopAuthBinding)):
             raise WorkshopAccessDenied('draft access denied')
-        permission = WorkshopPermission.WRITE_OWN_DRAFT if write else WorkshopPermission.READ_OWN_DRAFT
+        permission = WorkshopPermission.WRITE_WORKSHOP_DRAFT if write else WorkshopPermission.READ_WORKSHOP_DRAFT
         with self.repository.operation(context,permission,write=write) as connection:
             # Never accept a rotation which abandons still-required receipts,
             # including long-lived active drafts and restored legacy v2 rows.
@@ -71,8 +76,8 @@ class DraftRepository:
 
     @staticmethod
     def _active(connection, context, draft_id):
-        row = connection.execute(f'SELECT * FROM active_drafts WHERE draft_id=? AND {SCOPE}',
-                                 (draft_id,*_scope(context))).fetchone()
+        row = connection.execute(f'SELECT * FROM active_drafts WHERE draft_id=? AND {DRAFT_SCOPE}',
+                                 (draft_id,*_draft_scope(context))).fetchone()
         if row is None:
             raise DraftNotFoundError()
         return row
@@ -84,7 +89,7 @@ class DraftRepository:
             row['original_work_version'],row['created_at'],row['last_content_saved_at'],row['expires_at'])
 
     def _message(self, context, operation, request):
-        return json.dumps(['carbit.private-draft-request.v1',*_scope(context),operation,request],
+        return json.dumps(['carbit.private-draft-request.v1',*_request_scope(context),operation,request],
                              sort_keys=True,ensure_ascii=False,separators=(',',':')).encode('utf-8')
 
     @staticmethod
@@ -96,8 +101,8 @@ class DraftRepository:
             JOIN draft_termination_status s ON s.draft_id=d.draft_id
             CROSS JOIN draft_retention_policy p
             WHERE d.organization_id=? AND r.workshop_id=? AND r.auth_store_id=?
-                AND r.owner_employee_id=? AND r.request_id=?''',
-            (*_scope(context),request_id)).fetchone()
+                AND r.requester_employee_id=? AND r.request_id=?''',
+            (*_request_scope(context),request_id)).fetchone()
 
     @staticmethod
     def _result(row):
@@ -114,16 +119,16 @@ class DraftRepository:
             raise DraftIdempotencyConflictError()
         return self._result(previous)
 
-    def _record(self, connection, context, request_id, operation, message, row):
+    def _record(self, connection, context, request_id, operation, message, row, *, content_changed=False):
         key_id = self._keyring.active_key_id
         fingerprint = self._keyring.fingerprint(message,key_id=key_id)
         connection.execute('''INSERT INTO draft_request_receipts
-            (request_id,operation,draft_id,auth_store_id,owner_employee_id,workshop_id,draft_type,
-                request_fingerprint,accepted_revision,accepted_last_content_saved_at,accepted_state,fingerprint_key_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (request_id,operation,draft_id,auth_store_id,requester_employee_id,workshop_id,draft_type,
+                request_fingerprint,accepted_revision,accepted_last_content_saved_at,accepted_state,fingerprint_key_id,content_changed)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (request_id,operation,row['draft_id'],context.auth_store_id,context.employee_id,context.workshop_id,
              row['draft_type'],fingerprint,row['revision']+(operation=='DISCARD'),row['last_content_saved_at'],
-             'DISCARDED' if operation=='DISCARD' else 'ACTIVE',key_id))
+             'DISCARDED' if operation=='DISCARD' else 'ACTIVE',key_id,int(content_changed)))
         return self._result(self._previous(connection,context,request_id))
 
     def create(self, context, *, draft_type: DraftType, request_id, payload, work_id=None, original_work_version=None):
@@ -145,7 +150,7 @@ class DraftRepository:
             legacy = connection.execute('''SELECT r.draft_id FROM draft_creation_receipts r
                 JOIN draft_registry d USING(draft_id) WHERE d.organization_id=? AND r.workshop_id=?
                 AND r.auth_store_id=? AND r.owner_employee_id=? AND r.creation_request_id=?''',
-                (*_scope(context),request_id)).fetchone()
+                (*_request_scope(context),request_id)).fetchone()
             if legacy:
                 self._active(connection,context,legacy['draft_id'])
                 # Version 1 has no original request fingerprint: never guess it.
@@ -161,7 +166,7 @@ class DraftRepository:
             draft_id = connection.execute('''INSERT INTO draft_registry
                 (organization_id,workshop_id,auth_store_id,owner_employee_id,draft_type,work_id,original_work_version)
                 VALUES (?,?,?,?,?,?,?) RETURNING draft_id''',
-                (*_scope(context),draft_type.value,work_id,original_work_version)).fetchone()[0]
+                (*_request_scope(context),draft_type.value,work_id,original_work_version)).fetchone()[0]
             connection.execute('INSERT INTO draft_contents(draft_id,payload_json) VALUES (?,?)',(draft_id,encoded))
             connection.execute('''INSERT INTO draft_creation_receipts
                 (creation_request_id,draft_id,auth_store_id,owner_employee_id,workshop_id,draft_type)
@@ -178,8 +183,8 @@ class DraftRepository:
         with self._operation(context) as connection:
             if type(limit) is not int or not 1<=limit<=100:
                 raise ValueError('draft list limit must be 1..100')
-            rows = connection.execute(f'''SELECT * FROM active_drafts WHERE {SCOPE}
-                ORDER BY created_at,draft_id LIMIT ?''',(*_scope(context),limit)).fetchall()
+            rows = connection.execute(f'''SELECT * FROM active_drafts WHERE {DRAFT_SCOPE}
+                ORDER BY created_at,draft_id LIMIT ?''',(*_draft_scope(context),limit)).fetchall()
             return tuple(self._snapshot(row) for row in rows)
 
     def save(self, context, draft_id, *, expected_revision, request_id, payload):
@@ -199,7 +204,8 @@ class DraftRepository:
                 return self._replay(previous,message)
             if row['revision']!=expected_revision:
                 raise DraftRevisionConflictError()
-            if json.loads(row['payload_json'])!=json.loads(encoded):
+            content_changed = json.loads(row['payload_json'])!=json.loads(encoded)
+            if content_changed:
                 updated = connection.execute('''UPDATE draft_contents
                     SET payload_json=?,revision=revision+1,last_content_saved_at=unixepoch('now')
                     WHERE draft_id=? AND revision=? AND state='ACTIVE' AND expires_at>unixepoch('now')''',
@@ -209,7 +215,7 @@ class DraftRepository:
                     self._active(connection,context,draft_id)
                     raise DraftRevisionConflictError()
             return self._record(connection,context,request_id,'SAVE',message,
-                                self._active(connection,context,draft_id))
+                                self._active(connection,context,draft_id),content_changed=content_changed)
 
     def discard(self, context, draft_id, *, expected_revision, request_id):
         with self._operation(context,write=True) as connection:
@@ -243,4 +249,4 @@ class DraftRepository:
                 SELECT c.draft_id FROM draft_contents c JOIN draft_registry d USING(draft_id)
                 WHERE d.organization_id=? AND d.workshop_id=? AND d.auth_store_id=?
                     AND d.owner_employee_id=? AND c.expires_at<=unixepoch('now')
-                ORDER BY c.expires_at,c.draft_id LIMIT ?)''',(*_scope(context),batch_size)).rowcount
+                ORDER BY c.expires_at,c.draft_id LIMIT ?)''',(*_request_scope(context),batch_size)).rowcount

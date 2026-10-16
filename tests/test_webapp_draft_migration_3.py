@@ -17,6 +17,7 @@ def version_two(tmp_path, monkeypatch):
     repository = WorkRepository(tmp_path/'v2.db')
     with monkeypatch.context() as scoped:
         scoped.setattr(migrations,'apply_migration_3',lambda *args:None)
+        scoped.setattr(migrations,'apply_migration_4',lambda *args:None)
         repository.initialize()
     seed_test_scope(repository)
     return repository
@@ -41,7 +42,7 @@ def test_upgrade_preserves_rows_and_derives_expiry_from_save_not_late_cleanup(tm
     for table,rows in before.items():
         if table!='draft_schema_migrations':
             assert after[table]==rows
-    assert {r[0] for r in after['draft_schema_migrations']}=={1,2,3}
+    assert {r[0] for r in after['draft_schema_migrations']}=={1,2,3,4}
     with repository._connect() as c:
         assert tuple(c.execute('SELECT reason,terminated_at FROM draft_terminations WHERE draft_id=?',(expired,)).fetchone())==(
             'EXPIRED',NOW+8*86400)

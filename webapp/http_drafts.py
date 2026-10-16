@@ -158,7 +158,7 @@ async def _payload(request, schema):
 
 def _execute(request, resolver, operation, *, payload=None, draft_id=None, limit=50):
     service=_ready(request)
-    permission=WorkshopPermission.READ_OWN_DRAFT if operation in ('list','read') else WorkshopPermission.WRITE_OWN_DRAFT
+    permission=WorkshopPermission.READ_WORKSHOP_DRAFT if operation in ('list','read') else WorkshopPermission.WRITE_WORKSHOP_DRAFT
     context=resolver(request,permission)
     try:
         if operation=='create':
