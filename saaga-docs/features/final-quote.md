@@ -137,7 +137,10 @@ not project side, and the OpenAI work-description input still contains only
 operation, axle and part types. Side-aware presentation is not implemented.
 
 HumanSelection approves a part candidate; it is not a work-time approval.
-LabourPlan aggregation and LabourTimeAdjustment history/authorization are
-future work described in [Proposal Decisions](./proposal-decisions.md).
-A future complete quotation must block on unresolved required work times;
-the current model does not implement that planned review state.
+Multi-work labour plans, their human review and approved (also adjusted or
+zero-hour) labour pricing are now implemented separately; see
+[Labour Planning](./labour-planning.md) and [Approved Labour](./approved-labour.md).
+They are not connected to `FinalQuote`, which still carries one WorkItem and
+one part selection and prices its labour through the earlier positive-hours path.
+A complete multi-work quotation that blocks on unresolved or unapproved work
+times is not implemented.

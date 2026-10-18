@@ -17,6 +17,16 @@ Kirjaa sovitut ratkaisut, niiden perusteet ja avoimet oletukset. Erota vahvistet
 
 ## Päätökset
 
+### P-008 – työaikojen hyväksyjät ja henkilöstön yhtäläiset oikeudet
+
+- **Päivämäärä:** 2026-10-19 (käyttäjän päätökset 9.10. ja 16.10.)
+- **Tila:** vahvistettu; tarkentaa P-007:n hyväksyjää
+- **Päätös ja vahvistaja:** Käyttäjä: järjestelmä on vain korjaamon toimistohenkilöstön ja IT-tuen käyttöön; mekaanikot ja asiakkaat eivät käytä sitä. Yrittäjällä ja huoltamopäälliköllä (toimihenkilö) on samat täydet sovellusoikeudet oman korjaamon sisällä, myös työaikojen hyväksynnät. Integraation tekninen käyttäjä (esim. OpenClaw) ei saa näitä oikeuksia automaattisesti.
+- **Perustelu:** Huoltamopäällikkö koulutetaan pyörittämään korjaamoa yrittäjän siirtyessä toiseen toimipisteeseen; päätöksenteon on toimittava kummallakin samoin.
+- **Vaikutukset:** P-007:n "yrittäjä tai valtuutettu mekaanikko" korvautuu muodolla "yrittäjä tai huoltamopäällikkö". Tunnistautuminen, korjaamorajaus, käyttäjäkohtainen jäljitettävyys ja ihmisen hyväksyntää vaativat työnkulut säilyvät. Toteutus vastaa tätä: OWNER- ja SERVICE_MANAGER-roolien oikeudet ovat samat. IT_ADMINilla on korjaamon liiketoimintatoiminnoissa vain lukuoikeus; siitä erillinen on tunnistushallinnan ehdollinen MFA-resetointivalta (tuore TOTP-vahvistus, kohteena vain OWNER- tai SERVICE_MANAGER-henkilötili). OPENCLAW-palveluidentiteetillä ei ole sovellusoikeuksia ([työntekijän tunnistautuminen](../../saaga-docs/features/employee-authentication.md), [korjaamopääsy](../../saaga-docs/features/workshop-access.md)).
+- **Toteutustilanne 19.10.:** Työaikasuunnittelu, hyväksyntä ja hyväksytyn työajan hinnoittelu on toteutettu sisäisinä palveluina niiden nykyisessä laajuudessa: domainissa (vaiheet 3A/3B) sekä web-sovelluksen tallennus-, hyväksyntä- ja hinnoittelupalveluina ([työaikasuunnitelmat](../../saaga-docs/features/labour-planning.md), [hyväksytyt työajat](../../saaga-docs/features/approved-labour.md)). Hyväksyntä- ja hinnoittelupalveluilla ei ole HTTP-reittejä. Tallennuspolku tukee yhtä alkuperäisaikatietuetta työtä kohti, ei domain-suunnittelijan koko yhdistelmäaikamallia. Käyttäjän kokonaista työnkulkua tai monen työn kokonaistarjousta ei ole vielä toteutettu.
+- **Lähteet:** käyttäjän päätökset 9.10. ja 16.10. (projektin päälogiikkakeskustelu ja Claude-istunto); projektin CLAUDE.md §10.
+
 ### P-004 – domain-vaiheen 1 dokumentoinnin lähde ja rajaus
 
 - **Päivämäärä:** 2026-10-09
@@ -56,6 +66,7 @@ Kirjaa sovitut ratkaisut, niiden perusteet ja avoimet oletukset. Erota vahvistet
 - **Vaikutukset:** Tuleva LabourTimeAdjustment säilyttää myös aiemmat muutokset. Uusi hyväksyntä korvaa aiemman laskennassa, ei historiassa. Puuttuvan ajan ratkaisulle ei keksitä aiempaa aikaa. Työn laajuuden tai aikaperustan muutos edellyttää uudelleentarkistusta. Valtuutus tarkistetaan sovelluskerroksessa.
 - **Avoimet kysymykset:** Tallennus ja valtuutettu hyväksyntä lisätään myöhemmin. MANUAL_AUTODATA tarkoittaa käsin kirjattua Autodata-aikaa, ei yrittäjän poikkeamaa. HumanSelection koskee varaosavalintaa. Nykyisen paikallisen web-työjonon tapahtumahistoria ei ole työaikamuutosten hyväksyntä eikä siinä ole kirjautumista.
 - **Lähteet:** Käyttäjän vahvistamat työaikamuutossäännöt; [arkkitehtuuri](../../saaga-docs/ARCHITECTURE.md).
+- **Myöhempi tarkennus:** hyväksyjä on yrittäjä tai huoltamopäällikkö, ei mekaanikko; ks. P-008 (2026-10-19). Alkuperäinen kirjaus säilytetään.
 
 ### P-003 – web-version dokumentoinnin lähde ja rajaus
 

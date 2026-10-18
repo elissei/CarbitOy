@@ -1,10 +1,16 @@
 ---
 title: "Feature: Local Work Queue"
 type: feature
-last_verified: 2026-10-09
 sources:
   - webapp/main.py
   - webapp/database.py
+  - webapp/business_identity.py
+  - webapp/business_authorization.py
+  - webapp/workshop_context.py
+  - webapp/workshop_identity.py
+  - webapp/workshop_repository.py
+  - webapp/workshop_migrations.py
+  - webapp/http_access.py
   - webapp/static/app.js
   - webapp/static/index.html
   - services/labour_pricing.py
@@ -16,59 +22,58 @@ sources:
 
 ## Overview
 
-The local browser screen records a work inquiry before its labour time is known. A person can later enter an Autodata time they checked, view an inclusive labour calculation, and inspect the work's event history. The calculation is not an approved final quote.
-
-Supported use is local at `127.0.0.1`, without login or access control. Autodata time is entered manually; there is no Autodata API integration. Vercel deployment and a persistent cloud database remain open design decisions, not implemented capabilities of this web version.
+The browser queue records a workshop's work inquiry before its labour time is known. An authorized employee can later enter a manually checked Autodata time and see an inclusive labour calculation and event history; this is not an approved final quote.
 
 ## Key Concepts
 
 Before working with this feature, understand these concepts:
 
-- [Work and Part Data](../concepts/work-and-part-data.md) owns the shared `LabourTime` and `LabourCost` contracts.
+- [Work and Part Data](../concepts/work-and-part-data.md) defines the shared labour time and cost vocabulary.
+- [Workshop Identity](../concepts/workshop-identity.md) defines the session-derived employee, workshop, and event actor.
 
 ## Functional Specification
 
 ### User Flow
 
-1. Open `/` and choose **Uusi tiedustelu**. Enter a registration, the customer's original description, and the recorder's name. Labour time is not required at creation.
-2. Submit the form. The browser sends a UUID created when the dialog opened and keeps it if submission fails, so retrying the same form can recover a response lost after the server committed it.
-3. The new inquiry appears in the list with status `KESKEN`. Open it to view its original description, creation time, and event history.
-4. Check the work time in Autodata yourself. Enter the hours as given, the Autodata work description, the recorder's name, and an optional reference. The application does not fetch Autodata data, infer a diagnosis, or decide whether a time covers one or both sides.
-5. Save the labour entry. The work now shows the inclusive labour total, its net and VAT portions, and a new history event. Reopening the work reads the saved values.
+1. An employee signs in and opens `/`. Access to the queue and its JSON routes follows [Employee Authentication](./employee-authentication.md) and [Workshop Access](./workshop-access.md).
+2. An employee with write permission chooses **Uusi tiedustelu**, enters a registration and the customer's original description, then submits. The browser sends a new UUID retry key for that dialog.
+3. The inquiry appears in that workshop's list with status `KESKEN`. Opening it loads its original description, current version, and events.
+4. After checking Autodata manually, the employee enters positive hours, a work description, and optionally an Autodata reference. The browser submits the version it opened.
+5. A successful save displays the latest inclusive labour total, net amount, VAT, and event history. Reopening the inquiry reads these stored values.
+
+The inquiry dialog also offers manually saved editor state; [Inquiry Drafts](./inquiry-drafts.md) owns its save and recovery flow. The labour form remains a manual single-snapshot entry, separate from stored plan review and pricing in [Approved Labour](./approved-labour.md).
 
 ### Validation Rules
 
-- Creation requires `registration`, `customer_description`, `actor`, and a UUID `idempotency_key`; extra request fields are rejected.
-- Registration is at most 20 characters, customer description at most 4000, and actor at most 200. Each must contain non-whitespace text after trimming. Registration is converted to uppercase before storage and before the idempotency comparison.
-- Labour submission requires integer `version >= 1`, decimal `hours > 0`, nonblank `work_description` of at most 2000 characters, and nonblank `recorded_by` of at most 200. Extra fields are rejected.
-- `autodata_reference` is optional and at most 500 characters. Omitted or blank input normalizes to `None` in `RecordLabourRequest`, then is saved and returned as an empty string. The other labour text fields are trimmed before construction of `LabourTime` with source `MANUAL_AUTODATA`.
-- The computed labour total must be positive at cent precision. Invalid decimal input, a positive duration that rounds to zero cents, or a value too large for the calculation produces HTTP `422` without changing the work or its history. The route translates expected `ValidationError`, `InvalidOperation`, and decimal `Overflow` exceptions; unexpected programming errors are not hidden by a catch-all handler.
-- The browser uses required fields and length limits from the HTML form and renders FastAPI field errors in Finnish. Server validation still applies to API callers.
-
-The request models reject fields they do not declare. A malformed UUID, missing required field, invalid number, or overlong text receives FastAPI's HTTP `422` validation response before a repository write.
+- `CreateWorkRequest` requires `registration`, `customer_description`, and a UUID `idempotency_key`. Registration is at most 20 characters; description is at most 4000. Both are stripped and must remain nonblank; registration is uppercased.
+- `RecordLabourRequest` requires integer `version >= 1`, decimal `hours > 0`, and nonblank `work_description` of at most 2000 characters. `autodata_reference` is optional, at most 500 characters, and blank input becomes absent.
+- Both models forbid undeclared fields. They still accept deprecated optional `actor` and `recorded_by` strings of at most 200 characters, but the HTTP handlers do not use them for attribution. The browser sends neither field.
+- The write routes derive a `BusinessActor` from the authenticated session and current workshop context. Creating or changing an inquiry requires save permission; listing and reading require read permission.
+- Protected writes require a valid session, allowed role and workshop membership, matching request origin, and a session CSRF proof. The browser obtains the proof before POST or PUT.
+- Labour is constructed with source `MANUAL_AUTODATA` and the trusted employee ID as recorder. A duration that cannot produce a positive cent-valued labour total returns `422` without a save.
+- Invalid request bodies receive `422` before repository mutation. Browser required fields and length limits aid entry, but server validation is authoritative.
+- The route trims manual labour text and stores an omitted or blank Autodata reference as an empty string in the snapshot.
+- Authenticated HTTP writes use the session actor even when a legacy client supplies the deprecated name fields.
 
 ### Edge Cases
 
 | Scenario | Behavior |
 |----------|----------|
-| Same creation UUID and same normalized request fields | Returns the original creation response with HTTP `201`, even after a later update or server restart; it does not create another work or event. |
-| Same creation UUID with different normalized fields or actor | Returns HTTP `409`; the browser keeps the failed form and its key until a new dialog is opened. |
-| Deliberate new inquiry with identical details | A newly opened dialog generates another UUID, so a separate inquiry can be created. |
-| Unknown work ID on detail or labour request | Returns HTTP `404`. |
-| Submitted labour version differs from the current version | Returns HTTP `409`; the user must reopen the work to load its latest version, replacing unsaved form values. |
-| Two labour updates race on one version | The conditional update accepts one; the other gets `409`, with no second labour event. |
-| A create or labour request is pending | The corresponding form blocks duplicate submissions. Creation also disables and keeps its dialog open while the request is pending. |
-| A response arrives after the user selected another work | Selection counters stop an older detail or save response from replacing the visible work or its draft. |
-| A list response arrives after a newer list request | A list counter discards the older result. |
-| A list refresh fails after a successful save | The browser reports that the save succeeded but the list refresh failed. |
-| The inquiry has no labour entry yet | Price details remain hidden; its status is still `KESKEN`. |
-| A successful labour entry is saved again using its new version | Another version and history event are created; labour PUT has no replay key. |
-| An old event predates the `work_version` column | Its response has `work_version: null`; existing history is preserved. |
-| A work is selected while a different work's save is pending | The new work can be viewed, but its save control stays disabled until the pending request finishes. |
+| Same workshop and creation UUID, same normalized input and authenticated actor | Returns the stored creation response with `201`, including its original version, without another inquiry or event. |
+| Same workshop and UUID, changed normalized input or authenticated actor | Returns `409`; opening a new dialog gives the browser a new UUID. |
+| Same details with a new UUID | Creates another inquiry. |
+| Inquiry absent from the active workshop on detail or labour write | Returns `404`, without revealing another workshop's inquiry. |
+| Labour submitted against an older version | Returns `409`; reopen the inquiry before saving the revised entry. |
+| Two labour writes race on one version | One conditional update succeeds; the other conflicts without adding its event. |
+| Labour is saved again against the new version | Replaces the current snapshot and adds another event; this PUT has no replay key. |
+| Auth, origin, CSRF, or membership check fails | The access gate rejects the request before a business write; status depends on the failure (`400`, `401`, `403`, `409`, or `503`). |
+| An old event predates the version column | Its `work_version` remains `null`; newer events carry their resulting versions. |
+| A stale browser response arrives after another selection | Selection and list counters keep it from replacing the currently displayed work or list. |
+| A list refresh fails after creation or labour save | The browser keeps the accepted save and reports the failed refresh separately. |
+| A user has read permission only | The browser hides creation controls and disables the labour form; the gate rejects direct write requests. |
+| No manual labour is stored yet | The inquiry stays `KESKEN` and the price summary remains hidden. |
 
-The browser's history list shows event labels, times, and actors. The JSON detail response also carries each event's `details` and `work_version` for callers that need the recorded snapshot.
-
-The visible labour form binds `data-work-id` and `data-version` to the selected work. Submission checks that binding and captures the selection counter before awaiting a response. Only a response for the still-selected work and counter can replace the form. Pending-submit guards also reject synthetic duplicate submissions, not just repeated button clicks.
+The browser blocks duplicate pending submits. If list refresh fails after a successful save, it reports the save as successful and the refresh as failed.
 
 ## Technical Implementation
 
@@ -76,104 +81,100 @@ The visible labour form binds `data-work-id` and `data-version` to the selected 
 
 | Model/Type | Key Fields | Purpose |
 |--------|------------|---------|
-| `CreateWorkRequest` | `registration`, `customer_description`, `actor`, `idempotency_key` | Validated creation input; its UUID is stored as a string. |
-| `RecordLabourRequest` | `version`, `hours`, `work_description`, `recorded_by`, `autodata_reference` | Validated labour input and expected work version. |
-| `work_inquiries` | `id`, `registration`, `customer_description`, `status`, `version`, timestamps | SQLite record for each inquiry; creation sets `KESKEN`, version `1`, and empty labour columns. |
-| `work_inquiries` | `labour_hours`, `labour_source`, `labour_work_description`, `labour_recorded_by`, `autodata_reference` | Latest manually entered labour snapshot. |
-| `work_inquiries` | `hourly_rate`, `total_price`, `net_price`, `vat_price`, `vat_rate`, `currency` | Latest pricing snapshot, stored as text to preserve decimal strings. |
-| `work_events` | `work_id`, `occurred_at`, `event_type`, `actor`, `details_json`, `work_version` | Creation and labour history; details hold the registration and description or the full labour and price snapshot. |
-| `inquiry_creation_requests` | `idempotency_key`, `request_json`, `work_id`, `response_json` | Durable replay record for the normalized creation request and its original response. |
+| `CreateWorkRequest` | `registration`, `customer_description`, `idempotency_key`; deprecated `actor` | Validated inquiry input; the request key is separate from the generated work ID. |
+| `RecordLabourRequest` | `version`, `hours`, `work_description`, `autodata_reference`; deprecated `recorded_by` | Validated manual labour input and expected inquiry version. |
+| `work_inquiries` | `id`, `status`, `version`, description, labour and price columns | Current workshop inquiry and latest manual labour snapshot. |
+| `inquiry_workshop_assignments` | inquiry, workshop, organization IDs | Limits list, detail, and labour updates to assigned inquiries. |
+| `work_events` | `work_id`, `event_type`, `actor`, `details_json`, `work_version` | Creation and manual labour history for an inquiry. |
+| `scoped_inquiry_creation_requests` | workshop ID, key, fingerprint, response | Durable authenticated creation replay within a workshop. |
+| `inquiry_creation_requests` | key, request, work ID, response | Historical unscoped replay data that remains readable when its work has a workshop assignment. |
 
-The repository creates UUID work IDs and UTC timestamps. A detail response includes the inquiry columns and decoded events, newest first; a list response contains inquiry rows without events, ordered by creation time descending.
+`WorkRepository.initialize()` creates the base tables, adds nullable `work_version` to an older events table, and applies the business migrations at startup. It keeps existing event history.
+Initialization does not assign old inquiries to a workshop; assignment belongs to the offline access workflow in [Workshop Access](./workshop-access.md).
 
-The list is a queue view, not an event feed. It reads each work's current row, including the latest labour and price columns when present. Opening one work obtains its event history separately. Creation has no labour snapshot, and a later labour save replaces the current snapshot without changing the original customer description.
+`create_work()` inserts a `KESKEN` version-1 inquiry, its workshop assignment, creation event, and replay response in one transaction. The replay fingerprint includes normalized registration and description plus the authenticated actor ID. A replay returns the response captured at creation, so a later labour update does not change that replayed response.
 
-History retains every successful labour entry as a separate event. Its `details` object holds the snapshot supplied to the repository at that save, including the inclusive total and VAT split. The event's `actor` is the labour recorder; the inquiry creation event uses the creation form's actor. The current work row holds only the most recent labour values.
+`list_works()` returns assigned current rows ordered by creation time descending, without events. `get_work()` reads one assigned row and its newest-first decoded events in a single read transaction. The current row holds the latest manual labour and price fields; each successful labour save adds a separate historical event.
 
-`WorkRepository.initialize()` creates missing tables and indexes when the app starts. For an older `work_events` table, it adds a nullable `work_version` column; old events retain `null`, while new creation and labour events record the resulting version.
+Current inquiry fields and events have separate update behavior:
 
-Initialization performs the schema additions in a transaction. It does not delete or recreate the existing database or its tables, and does not backfill historical version numbers.
+- Creation leaves the labour and price columns empty.
+- Recording labour preserves the original customer description.
+- Manual labour saves leave the inquiry status as `KESKEN`.
 
-Creation inserts the inquiry, `TIEDUSTELU_LUOTU` event, and replay record in one SQLite write transaction. Labour uses `WHERE id = ? AND version = ?`, increments the version, and writes `AUTODATA_TYOAIKA_KIRJATTU` with the resulting version in the same transaction. A failed operation rolls back its writes. Detail reads the inquiry and history in one read transaction.
+`record_labour()` checks the assigned inquiry, updates it only when `id` and expected `version` match, increments the version, and appends `AUTODATA_TYOAIKA_KIRJATTU` in the same transaction. It uses the trusted actor ID in the current row and event. New authenticated events also include a display-name attribution snapshot; the browser labels older self-reported actors separately.
 
-The replay record compares the serialized registration, description, and actor after request validation. It stores the response assembled at creation, so a retry returns version `1` even if that inquiry now has newer labour data. Call `GET /api/works/{work_id}` to read current state after a replay.
+The route calculates labour cost from entered hours, then splits an inclusive total into net and VAT. It stores decimal price values as text. The queue displays the returned price; JavaScript formats it but does not recalculate it. This price does not grant the approval described in [Approved Labour](./approved-labour.md).
 
-The route constructs `LabourTime` from the supplied time and provenance, then calls `services.labour_pricing.calculate_labour_cost()`. At the default inclusive rate of `90.00` EUR per hour, it multiplies hours by the rate and rounds half up to cents. `split_inclusive_vat()` divides that total by `1.255` and rounds the net half up to cents; VAT is the total minus net. VAT is not added to the total. For `1.60` hours, the stored total is `144.00` EUR, net `114.74`, and VAT `29.26`.
-
-This web pricing path is separate from the library's [Proposal Decisions](./proposal-decisions.md) calculation. The shared model contracts are in [Work and Part Data](../concepts/work-and-part-data.md).
+The default rate is 90.00 EUR per hour inclusive of 25.5% VAT. Labour cost rounds the gross amount half up to cents; the VAT split rounds net half up and sets VAT to gross minus net.
 
 ### Services/Functions
 
 | Module | Function/Method | Purpose |
 |---------|--------|---------|
-| `webapp.main` | `create_app()` | Builds the FastAPI app, chooses its SQLite path, registers routes, and initializes storage at startup. |
-| `webapp.database.WorkRepository` | `initialize()` | Creates the schema and migrates an older event table. |
-| `webapp.database.WorkRepository` | `create_work()` | Atomically creates an inquiry and its replay and history records, or returns a saved response for an identical UUID request. |
-| `webapp.database.WorkRepository` | `list_works()` | Reads inquiry rows for the queue. |
-| `webapp.database.WorkRepository` | `get_work()` | Reads one inquiry and its history together. |
-| `webapp.database.WorkRepository` | `record_labour()` | Conditionally replaces the labour and pricing snapshot and adds an event. |
-| `services.labour_pricing` | `calculate_labour_cost()` | Produces a cent-rounded EUR `LabourCost` from supplied hours and rate. |
-| `services.labour_pricing` | `split_inclusive_vat()` | Splits an inclusive total into net and VAT amounts. |
+| `webapp.main` | `create_app()` | Configures the guarded FastAPI app and business storage. |
+| `webapp.database.WorkRepository` | `initialize()` | Initializes the inquiry schema and business migrations. |
+| `webapp.database.WorkRepository` | `create_work()` | Creates or replays an inquiry using a trusted actor and workshop context. |
+| `webapp.database.WorkRepository` | `list_works()` | Lists inquiries assigned to the current workshop. |
+| `webapp.database.WorkRepository` | `get_work()` | Reads an assigned inquiry with its event history. |
+| `webapp.database.WorkRepository` | `record_labour()` | Writes a version-checked manual labour snapshot and event. |
+| `services.labour_pricing` | `calculate_labour_cost()` | Calculates the cent-rounded inclusive labour cost. |
+| `services.labour_pricing` | `split_inclusive_vat()` | Splits that amount into net and VAT. |
+
+Repository calls use a `TrustedWorkshopContext`; HTTP handlers obtain it from the session. `WorkRepository.operation()` holds the authorization reservation across each business transaction and checks workshop permission inside it. Server-side workshop setup and membership rules are covered by [Workshop Access](./workshop-access.md).
+
+The repository writes the resulting inquiry version into each new event. Reading detail returns events newest first, while the list reads current inquiry rows without history.
 
 ### Screens/Components
 
 | Component | Purpose |
 |-----------|---------|
-| `#work-list` | Shows inquiries and opens a selected work. |
-| `#new-work-dialog` | Collects creation details and manages a UUID across retries. |
-| `#work-detail` and `#labour-form` | Show the selected inquiry and submit labour against its current version. |
-| `#price-summary` | Shows the saved total, net price, and 25.5% VAT in Finnish currency format. |
-| `#event-list` | Shows creation and labour events with time and actor. |
-| `#toast`, `#new-work-error`, `#labour-error` | Report saves, request failures, and field errors. |
+| `#business-shell` and `#session-user` | Reveal the queue after session confirmation and show the employee or read-only role. |
+| `#work-list` | Shows workshop inquiries and opens a selected item. |
+| `#new-work-dialog` | Collects inquiry fields and retains one UUID across retries. |
+| `#work-detail` and `#labour-form` | Show an inquiry and submit hours against its current version. |
+| `#price-summary` and `#event-list` | Show saved price components and authenticated or legacy event attribution. |
 
 ### API Calls
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/works` | GET | Lists stored inquiries, without event details. |
-| `/api/works` | POST | Creates an inquiry and returns its initial detail with HTTP `201`; can replay by UUID or reject a conflicting reuse with `409`. |
-| `/api/works/{work_id}` | GET | Reads an inquiry and its event history; returns `404` if absent. |
-| `/api/works/{work_id}/labour` | PUT | Validates and saves labour against an expected version; returns updated detail, `404`, `409`, or `422`. |
+| `/api/works` | GET | Lists inquiries in the active workshop, without events. |
+| `/api/works` | POST | Creates or replays an inquiry; `201` on success, `409` for conflicting key reuse. |
+| `/api/works/{work_id}` | GET | Reads an assigned inquiry and its event history; `404` if unavailable. |
+| `/api/works/{work_id}/labour` | PUT | Saves manual labour against the expected version; `404`, `409`, or `422` for route and data failures. |
 
-A creation request has this shape:
+Create request body, with the session cookie and write CSRF header supplied by the browser:
 
 ```json
 {
   "registration": "ABC-123",
   "customer_description": "Customer's original work request",
-  "actor": "Recorder",
   "idempotency_key": "21bbbe25-6b60-4732-97ea-430075cbd885"
 }
 ```
 
-The server trims the text and stores the registration as `ABC-123`. A successful response includes `id`, `status: "KESKEN"`, `version: 1`, empty labour fields, and a creation event. The submitted UUID is a retry key, not the work ID.
+The response includes an assigned work ID, `status: "KESKEN"`, `version: 1`, empty labour columns, and a creation event. The UUID in the request is only a retry key.
 
-After reading that version, a labour request has this shape:
+Manual labour request after reading that version:
 
 ```json
 {
   "version": 1,
   "hours": "1.60",
   "work_description": "Checked Autodata operation",
-  "recorded_by": "Recorder",
   "autodata_reference": "Reference shown in Autodata"
 }
 ```
 
-The response has version `2`, the latest price fields, and both events. Decimal fields in the stored work are strings, including `labour_hours`, `hourly_rate`, `total_price`, `net_price`, `vat_price`, and `vat_rate`. Sending another labour request with version `1` now produces `409`; read the work again before trying to save a revised entry.
+On success, the response contains the incremented version, latest labour and price strings, and both events. A repeated PUT with version `1` then returns `409`. The [Employee Authentication](./employee-authentication.md) page owns the session and CSRF exchange; the [Inquiry Drafts](./inquiry-drafts.md) page owns its separate `/api/drafts` routes.
 
 ## Integration Points
 
-- **Depends on**: FastAPI and Pydantic for HTTP validation, SQLite for local persistence, and the shared labour models in [Work and Part Data](../concepts/work-and-part-data.md). The module placement is described in [Architecture](../ARCHITECTURE.md).
-- **Used by**: The browser served at `/`, which calls these four JSON operations. Its JavaScript uses the same server's `/static` assets.
-- **External systems**: None in this flow. A person supplies the Autodata time; the app does not call Autodata or the separate library intake and quote workflow.
-
-The actor and recorder names come from the forms. These routes do not authenticate a user or enforce permissions, so a caller supplied name is the provenance stored with each event.
-
-The module exposes `app = create_app()` for an ASGI server. The browser is served by that same app; it has no separate backend configuration.
-
-JavaScript displays the server's decimal price strings with `Intl.NumberFormat("fi-FI")`; it does not recalculate labour prices or VAT.
+- **Depends on**: FastAPI, Pydantic, SQLite, and authenticated [Workshop Access](./workshop-access.md) for the active membership and permissions.
+- **Used by**: The protected browser at `/`, through these four JSON routes. The local queue and manually saved [Inquiry Drafts](./inquiry-drafts.md) share its inquiry form.
+- **External systems**: None in this flow. An employee checks Autodata and enters the time; the route makes no Autodata request.
 
 ## Extension Guide
 
-Use `create_app(database_path=...)` to point an instance at another SQLite file; otherwise it reads `CARBIT_DATABASE` or defaults to `var/carbit.db` under the repository root. Keep the work update and event insert in one transaction, and carry the expected `version` through any new editor so concurrent changes still surface as conflicts. A new persisted labour or price field must be added to the SQLite snapshot, event details, route snapshot, and browser rendering together. Changes to the shared labour contracts belong in [Work and Part Data](../concepts/work-and-part-data.md); changes to the separate proposal path belong in [Proposal Decisions](./proposal-decisions.md).
+Carry the server-resolved context and expected version through any new inquiry editor, and keep each update and event in one transaction. Add a new protected route to the reviewed access inventory in `webapp/http_access.py`. A workflow that needs reviewed hours should call the internal [Approved Labour](./approved-labour.md) gate instead of treating this manual snapshot as approval.

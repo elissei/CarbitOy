@@ -1,9 +1,8 @@
 ---
 title: "Feature: Proposal Decisions"
 type: feature
-last_verified: 2026-10-09
+last_verified: 2026-10-19
 sources:
-  - domain/config/pair_replacement.py
   - services/proposal_builder.py
   - services/labour_pricing.py
   - domain/rules/availability.py
@@ -41,44 +40,44 @@ sources:
 
 Callers turn a requirement, indexed products, and supplier offers into priced candidates, then present a raw proposal for a person to choose from. `create_demo_proposal()` composes these steps for a work item with one requirement.
 
-## Domain stage 1 — implemented in 6fb2e993
-
-Source: [feature/autodata-labour, 6fb2e993](https://github.com/elissei/CarbitOy/tree/6fb2e9930e20235661aece6856c396d8db15a3a4).
-The source branch passed 158 tests. These additions are documented without
-merging source files into visuals.
-
-WorkItem accepts Side, defaulting to UNKNOWN, and the new
-SHOCK_ABSORBER_REPLACEMENT operation. Explicit pair lookup confirms only
-front shock absorbers. A missing rule means the practice is unspecified;
-lookup does not change a work item, select an Autodata time or price it.
-
-The existing services.proposal_builder.build_raw_proposal() receives a
-proposal ID, Vehicle, WorkItem, LabourTime and optional candidate list.
-It prices the supplied time through services.labour_pricing, creates the
-current RawProposal with an aware UTC timestamp and a fresh candidate list,
-and does not mutate inputs. It does not fetch or choose labour times.
-
-The frozen demo still calls domain.rules.labour_cost and accepts exactly
-one part requirement. Its path is not migrated to the new builder.
-format_raw_proposal() still has a label only for BRAKE_REPLACEMENT;
-passing SHOCK_ABSORBER_REPLACEMENT to that formatter raises KeyError.
-This stage does not provide end-to-end shock absorber intake or rendering.
-
 ## Key Concepts
 
 Before working with this feature, understand these concepts:
 
 - [Work and Part Data](../concepts/work-and-part-data.md) owns the requirement, offer, proposal, and selection contracts.
+- [Labour Planning](./labour-planning.md) owns multi-work time coverage and explicit review; its result is not wired into this single-work proposal path.
 
 ## Functional Specification
 
 ### Mechanism
 
 1. Obtain a requirement, products, and offers; [Supplier Adapters](../patterns/supplier-adapters.md) owns offer acquisition. Call `build_supplier_candidates()` and, when price ordering is needed, `sort_by_total_price()`.
-2. Obtain `LabourTime`, call `domain.rules.labour_cost.calculate_labour_cost()`, and construct `RawProposal` with the work, labour, and candidates. `create_demo_proposal()` composes this for exactly one part requirement.
+2. Obtain a caller-supplied `LabourTime`. `build_raw_proposal()` prices it with `services.labour_pricing.calculate_labour_cost()` and builds a `RawProposal` for one `WorkItem`; omitted candidates become an empty list and `created_at` is the current aware UTC time. `create_demo_proposal()` instead calls the domain labour rule and composes candidates for exactly one part requirement.
 3. Call `format_raw_proposal()` for Finnish decision text, then `select_candidate_from_proposal()` with a candidate from that proposal and the selector's identity and time.
 
 After selection, [Final Quote and Presentation](./final-quote.md) owns quote assembly; `create_demo_final_quote()` is the in-repository composition example.
+
+The two proposal entry points leave different work to the caller. Use
+`build_raw_proposal()` when the caller already has a `WorkItem`, a time, and
+any candidate list it wants to show. It accepts no product or offer arguments
+and therefore does not discover parts. Use `create_demo_proposal()` only for
+its one-requirement demo composition; it takes products, offers, and a
+caller-supplied creation timestamp. Neither path selects hours from a plan.
+
+```python
+candidates = build_supplier_candidates(requirement, products, offers)
+ordered = sort_by_total_price(candidates)
+proposal = build_raw_proposal(
+    proposal_id, vehicle, work_item, labour_time, ordered
+)
+selection = select_candidate_from_proposal(
+    proposal, ordered[0], selected_by, selected_at
+)
+```
+
+This composition is appropriate only when `ordered` is nonempty. When it is
+empty, render the proposal for human handling instead of indexing a missing
+candidate. `build_raw_proposal()` preserves the candidate order it receives.
 
 ### Validation Rules
 
@@ -87,6 +86,8 @@ After selection, [Final Quote and Presentation](./final-quote.md) owns quote ass
 - Selection requires candidate membership and nonblank `proposal_id` and `selected_by`.
 - `RawProposal` requires its labour time and cost hours to agree. The library labour rule multiplies hours by its fixed `90.00` EUR hourly rate without rounding before it constructs `LabourCost`. The shared [labour cost contract](../concepts/work-and-part-data.md) requires the product rounded half up to cents; an input whose raw product has fractional cents can therefore fail `LabourCost` validation.
 - `create_demo_proposal()` requires exactly one part requirement. It passes the resulting candidates into `RawProposal` without sorting them.
+- `build_raw_proposal()` copies the supplied candidate list, so later changes to the caller's list do not change the proposal's candidate list. It does not retrieve or select labour times.
+- An unavailable offer never reaches candidate validation. A matched available offer does; invalid identifiers, currency, or price then raise rather than silently disappearing.
 
 The renderer uses the proposal's existing candidate order, so callers that want price order must sort before constructing the proposal.
 
@@ -100,9 +101,13 @@ while `LabourCost` expects `120.20` EUR, so construction fails. The separate
 |----------|----------|
 | No candidates | Renderer says no part options are available and calls for human handling. |
 | Offer has no matching product or is unavailable | Candidate builder skips it. |
+| Product type, package unit, or required axle is incompatible | Product coverage reports no match and the builder omits that candidate. |
+| Requirement quantity spans multiple packages | Coverage rounds the package count up; candidate total uses that count times offer unit price. |
 | Matched available offer has blank identifiers or currency, or a nonpositive price | Validation raises `ValueError`. |
 | Candidate does not belong to the proposal | Selection raises `ValueError`. |
 | Work item has no requirement or more than one | `create_demo_proposal()` raises `ValueError`. |
+| Shock absorber work reaches `format_raw_proposal()` | Its operation-label lookup raises `KeyError`; the formatter currently has a brake replacement label only. |
+| Candidates are not price sorted | The formatter numbers them in the order already stored on the proposal. |
 
 ## Technical Implementation
 
@@ -116,8 +121,7 @@ while `LabourCost` expects `120.20` EUR, so construction fails. The separate
 
 | Module | Function/Method | Purpose |
 |---------|--------|---------|
-| `domain.config.pair_replacement` | `get_pair_replacement_rule()` | Queries workshop practice without selecting a labour time. |
-| `services.proposal_builder` | `build_raw_proposal()` | Builds one RawProposal using the shared rounded pricing service; independent of the frozen demo. |
+| `services.proposal_builder` | `build_raw_proposal()` | Builds one `RawProposal` using the shared rounded pricing service; separate from the demo composition. |
 | `services.labour_pricing` | `calculate_labour_cost()` | Prices supplied Decimal hours at 90.00 EUR/h including VAT and rounds half up to cents. |
 | `domain.rules.supplier_candidates` | `build_supplier_candidates()` | Filters offers and builds covered candidates. |
 | `domain.rules.package_coverage` | `calculate_product_coverage()` | Checks product, unit, axle, and package coverage. |
@@ -143,35 +147,3 @@ for the shared model's cent-rounded total requirement if accepting labour
 durations that produce fractional cents; the current library rule can reject
 them. Once a person chooses a candidate, use [Final Quote and Presentation](./final-quote.md)
 for quote creation and output.
-
-## Planned LabourPlan decisions — not implemented
-
-| Scenario | Future decision |
-| --- | --- |
-| Same operation on both sides; matching Autodata pair time exists | Use the pair time instead of individual side times. |
-| Pair time missing | Await human review; do not invent time, sum the sides as a fallback or substitute zero. |
-| Distinct operations | Sum their separate Autodata times by default. |
-| Shared removal/installation steps | No automatic deduction; later authorized adjustment with rationale. |
-| Exact Autodata combined-work time exists | It may replace the times of the covered operations, retaining its original provenance. |
-| A combined group covers only some operations | Add the uncovered operations; count every operation exactly once. |
-
-The proposed aggregation prices the full Decimal sum once, then rounds the
-overall inclusive labour charge half up to cents. At 90.00 EUR/h, two separate
-1.3355-hour operations give 2.6710 hours and 240.39 EUR, not the 240.40 EUR sum
-of separately rounded prices. This is future aggregation policy; the current
-builder prices one caller-supplied time. Inclusive VAT is split at 25.5% using
-the existing service, never added again.
-
-## Later human time adjustments — not implemented
-
-A future LabourTimeAdjustment records an approved absolute replacement time,
-its target work/group, original basis, reason, authorized entrepreneur or
-mechanic, and aware UTC timestamp. Originals are retained. A missing pair
-time has no fabricated prior value. New approval supersedes an earlier
-adjustment in calculation but preserves its history; changed scope or basis
-requires renewed review. Authorization belongs to the application boundary.
-Neither HumanSelection (parts choice) nor manual Autodata entry implements
-this workflow. Current web event history likewise is not approval authorization.
-
-See [decisions](../../docs/notes/paatokset.md) and the
-[status-separated diagram](../../docs/visualizations/domain-vaihe-1.md).

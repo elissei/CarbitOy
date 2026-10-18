@@ -17,6 +17,17 @@ Kirjaa olennaiset työvaiheet ja niiden perustelut. Liitä mukaan commit, testi 
 
 ## Merkinnät
 
+### 2026-10-19 – dokumentaation päivitys web-sovelluksen nykytilaan (Saaga)
+
+- **Tavoite:** Tuoda tekninen dokumentaatio ajan tasalle 9.–18.10. web-työstä: kirjautuminen ja MFA, korjaamoeristys, työaikasuunnitelmien tallennus ja hyväksyntä, pysyvät ja jaetut luonnokset sekä uuden ympäristön perustaminen (E1).
+- **Lähtötilanne / koodin commit:** `visuals` `f7f974b`, jossa 9.10. käsityönä tehty domain-vaiheen 1 dokumentaatio oli commitoimatta. Lähdehaara `feature/web-app` `3335de3` (pushattu 19.10.).
+- **Tehdyt muutokset:** 9.10. dokumentaatio commitoitiin sellaisenaan päivättynä tilannekuvana (`35f0af0`). `feature/web-app` yhdistettiin tavallisella mergellä (`8ddd1c4`, ei konflikteja; koodi identtinen lähdehaaran kanssa, dokumentaatioon vain lisäyksiä). Saaga update (Codex-tausta, 14 vaihetta, 39 min 45 s) loi seitsemän uutta sivua ja päivitti yhdeksän. Käsin korjattiin `final-quote.md`:n vanhentunut "ei toteutettu" -kappale ja lisättiin päätös P-008.
+- **Perustelut ja vaihtoehdot:** Saaga ajetaan jatkossa tiheämmin pienempinä erinä. Vanhoja kirjauksia ei poisteta; myöhemmät päätökset merkitään tarkennuksina.
+- **Tarkistus ja tulos:** Saagan oma validointi läpäisi. `git diff --check` läpäisi. Vanhentuneiden väitteiden, mekaanikkohyväksyjän ja salaisuuksien haku tehtiin. Testejä ei ajettu, koska koodia ei muutettu.
+- **Havainnot / avoimet kysymykset:** Commitoimattomat MFA-palautusmuutokset eivät ole dokumentoinnin lähteenä. Monen työn kokonaistarjous puuttuu edelleen.
+- **Seuraava askel:** ChatGPT/Codex-katselmointi, sitten commit ja push `visuals`-haaraan käyttäjän luvalla.
+- **Linkit / tuloksen commit:** [päätösloki P-008](paatokset.md), Saagan uudet sivut kansiossa `saaga-docs/features/`.
+
 ### 2026-10-09 – domain-vaiheen 1 dokumentointi ja tulevien vaiheiden rajaus
 
 - **Tavoite:** Kuvata toteutettu kohdepuoli ja parivaihtokonfiguraatio erillään suunnitellusta LabourPlan-laskennasta ja myöhemmistä hyväksytyistä työaikamuutoksista.
