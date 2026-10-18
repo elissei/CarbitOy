@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -127,6 +128,161 @@ def migrate_approved_development(database_path, *, backup_path, expected_sha256,
             "assigned_inquiries": len(inquiry_ids), "backup_path": str(backup_path)}
 
 
+INITIAL_WORKSHOP_OPERATION = "INITIAL_WORKSHOP_ESTABLISHED"
+# Ledgers of a business database fully initialized by this release. Older,
+# partial or newer databases are rejected; establishment never migrates.
+SUPPORTED_BUSINESS_LEDGERS = (
+    ("webapp_schema_migrations", "SELECT version FROM webapp_schema_migrations", {1, 2}),
+    ("workshop_schema_migrations", "SELECT version FROM workshop_schema_migrations", {1}),
+    ("draft_schema_migrations", "SELECT version FROM draft_schema_migrations", {1, 2, 3, 4}),
+)
+# Tables the operation reads or writes. A first establishment requires all of
+# them to be empty: no legacy work, scope, members or earlier offline operations.
+ESTABLISHMENT_TABLES = (
+    "work_inquiries", "work_events", "inquiry_creation_requests", "repair_organizations",
+    "workshops", "workshop_principals", "workshop_memberships", "active_user_workshops",
+    "inquiry_workshop_assignments", "scoped_inquiry_creation_requests", "workshop_audit_events",
+)
+AUDIT_IMMUTABILITY_TRIGGERS = (
+    "immutable_workshop_audit_events_update", "immutable_workshop_audit_events_delete",
+)
+
+
+class WorkshopEstablishmentError(ValueError):
+    """Rejected establishment request; this call committed nothing."""
+
+
+def _establishment_request(database_path, organization_id, organization_name, workshop_id,
+                           workshop_name, operator_reference):
+    """Validate plain inputs before any database is opened."""
+    if not isinstance(database_path, (str, os.PathLike)) or not Path(database_path).is_absolute():
+        raise WorkshopEstablishmentError("an explicit absolute business database path is required")
+    try:
+        path = Path(database_path).resolve(strict=True)
+    except OSError:
+        raise WorkshopEstablishmentError("an existing business database file is required") from None
+    if not path.is_file():
+        raise WorkshopEstablishmentError("an existing business database file is required")
+    approved = APPROVED_DATABASE.absolute()
+    if path == approved.resolve() or (approved.exists() and os.path.samefile(path, approved)):
+        # The local development database has its own approved migration procedure.
+        raise WorkshopEstablishmentError("the approved development database cannot be established")
+    identifiers = []
+    for value in (organization_id, workshop_id):
+        try:
+            if not isinstance(value, str):
+                raise ValueError
+            identifiers.append(str(UUID(value)))
+        except ValueError:
+            raise WorkshopEstablishmentError("explicit organization and workshop UUIDs are required") from None
+    if identifiers[0] == identifiers[1]:
+        raise WorkshopEstablishmentError("organization and workshop UUIDs must differ")
+    if {CARBIT_REPAIR_ORGANIZATION, WORKSHOP_1, WORKSHOP_2} & set(identifiers):
+        raise WorkshopEstablishmentError("development migration identifiers are reserved")
+    names = []
+    for value in (organization_name, workshop_name):
+        if not isinstance(value, str) or not 1 <= len(value.strip()) <= 200:
+            raise WorkshopEstablishmentError("organization and workshop names must be 1-200 characters")
+        names.append(value.strip())
+    if not isinstance(operator_reference, str) or not 1 <= len(operator_reference.strip()) <= 500:
+        raise WorkshopEstablishmentError("a bounded offline operator/approval reference is required")
+    return path, {"organization_id": identifiers[0], "organization_name": names[0],
+                  "workshop_id": identifiers[1], "workshop_name": names[1],
+                  "workshop_status": "ACTIVE"}
+
+
+@contextmanager
+def _existing_business_connection(path):
+    # mode=rw never creates a missing file, even if it vanished after validation.
+    connection = sqlite3.connect(path.as_uri() + "?mode=rw", uri=True)
+    try:
+        connection.row_factory = sqlite3.Row
+        for setting in ("foreign_keys", "recursive_triggers"):
+            connection.execute(f"PRAGMA {setting} = ON")
+            enabled = connection.execute(f"PRAGMA {setting}").fetchone()
+            if enabled is None or enabled[0] != 1:
+                raise RuntimeError(f"SQLite requires {setting}=ON")
+        yield connection
+    finally:
+        connection.close()
+
+
+def _require_supported_business_schema(connection):
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for ledger, query, versions in SUPPORTED_BUSINESS_LEDGERS:
+        if ledger not in tables or {row[0] for row in connection.execute(query)} != versions:
+            raise WorkshopEstablishmentError("an initialized business database of the supported schema is required")
+    triggers = {row[0] for row in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name=?", ("workshop_audit_events",))}
+    if set(ESTABLISHMENT_TABLES) - tables or set(AUDIT_IMMUTABILITY_TRIGGERS) - triggers:
+        raise WorkshopEstablishmentError("an initialized business database of the supported schema is required")
+
+
+def _existing_establishment(connection, request):
+    """Event ID of the matching audited establishment, None for a clean database.
+
+    Any other organization/workshop/establishment state is a conflict. It is
+    never completed, reactivated, updated or inferred from history.
+    """
+    organizations = [tuple(row) for row in connection.execute(
+        "SELECT organization_id, name, enabled FROM repair_organizations ORDER BY organization_id")]
+    workshops = [tuple(row) for row in connection.execute(
+        "SELECT workshop_id, organization_id, name, status FROM workshops ORDER BY workshop_id")]
+    events = connection.execute(
+        "SELECT event_id, details_json FROM workshop_audit_events WHERE operation=? ORDER BY event_id",
+        (INITIAL_WORKSHOP_OPERATION,)).fetchall()
+    if not organizations and not workshops and not events:
+        return None
+    if (organizations != [(request["organization_id"], request["organization_name"], 1)]
+            or workshops != [(request["workshop_id"], request["organization_id"],
+                              request["workshop_name"], "ACTIVE")]
+            or len(events) != 1 or json.loads(events[0]["details_json"]) != request):
+        raise WorkshopEstablishmentError("existing workshop structure conflicts with this request; nothing was changed")
+    return events[0]["event_id"]
+
+
+def establish_initial_workshop(database_path, *, organization_id, organization_name, workshop_id,
+                               workshop_name, operator_reference):
+    """Trusted offline operator only: one organization and one ACTIVE workshop.
+
+    The target is an existing business database already initialized by the
+    current release. This never opens the auth database, migrates, creates
+    accounts, memberships or an active-workshop selection. An identical retry,
+    also after later memberships or work, returns ALREADY_ESTABLISHED.
+    """
+    path, request = _establishment_request(database_path, organization_id, organization_name,
+                                           workshop_id, workshop_name, operator_reference)
+    with _existing_business_connection(path) as connection, connection:
+        # Every state decision and write happens under one writer reservation.
+        connection.execute("BEGIN IMMEDIATE")
+        _require_supported_business_schema(connection)
+        event_id = _existing_establishment(connection, request)
+        status = "ALREADY_ESTABLISHED"
+        if event_id is None:
+            for table in ESTABLISHMENT_TABLES:
+                # Identifiers come from the constant tuple above, never from input.
+                if connection.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone():
+                    raise WorkshopEstablishmentError("a first establishment requires an empty new environment")
+            connection.execute("INSERT INTO repair_organizations (organization_id, name, enabled) VALUES (?, ?, 1)",
+                               (request["organization_id"], request["organization_name"]))
+            connection.execute("INSERT INTO workshops (workshop_id, organization_id, name, status) "
+                               "VALUES (?, ?, ?, 'ACTIVE')",
+                               (request["workshop_id"], request["organization_id"], request["workshop_name"]))
+            audit(connection, INITIAL_WORKSHOP_OPERATION, operator_reference, request)
+            event = connection.execute("SELECT event_id, operation FROM workshop_audit_events "
+                                       "WHERE event_id = last_insert_rowid()").fetchone()
+            if event is None or event["operation"] != INITIAL_WORKSHOP_OPERATION:
+                raise RuntimeError("establishment audit event was not recorded")
+            event_id, status = event["event_id"], "ESTABLISHED"
+        # Both a first establishment and a recognized retry require an intact
+        # database; this check never repairs rows and a failure rolls back.
+        if connection.execute("PRAGMA foreign_key_check").fetchall():
+            raise WorkshopEstablishmentError("business database foreign-key check failed; nothing was changed")
+    # Reached only after a successful commit (or a write-free recognition).
+    return {"status": status, "organization_id": request["organization_id"],
+            "workshop_id": request["workshop_id"], "audit_event_id": event_id}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest='operation', required=True)
@@ -135,6 +291,10 @@ def main():
     migrate.add_argument('--backup', required=True)
     migrate.add_argument('--expected-sha256', required=True)
     migrate.add_argument('--operator-reference', required=True)
+    establish = subparsers.add_parser('establish-initial-workshop')
+    for option in ('--database', '--organization-id', '--organization-name', '--workshop-id',
+                   '--workshop-name', '--operator-reference'):
+        establish.add_argument(option, required=True)
     for operation in ('grant-membership', 'revoke-membership', 'select-workshop'):
         command = subparsers.add_parser(operation)
         command.add_argument('--database', required=True)
@@ -146,6 +306,17 @@ def main():
     if args.operation == 'migrate-approved-development':
         result = migrate_approved_development(
             args.database, backup_path=args.backup, expected_sha256=args.expected_sha256,
+            operator_reference=args.operator_reference,
+        )
+        print(json.dumps(result))
+        return
+    if args.operation == 'establish-initial-workshop':
+        # Business database only; never initialize it or touch the auth database.
+        if not Path(args.database).is_absolute() or not Path(args.database).is_file():
+            parser.error('an existing absolute business database path is required')
+        result = establish_initial_workshop(
+            args.database, organization_id=args.organization_id, organization_name=args.organization_name,
+            workshop_id=args.workshop_id, workshop_name=args.workshop_name,
             operator_reference=args.operator_reference,
         )
         print(json.dumps(result))
