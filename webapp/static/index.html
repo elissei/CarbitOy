@@ -5,15 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Carbit työjono</title>
     <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/login.css">
+    <script src="/login.js" defer></script>
+    <script src="/static/inquiry_drafts.js" defer></script>
     <script src="/static/app.js" defer></script>
   </head>
   <body>
+    <main id="auth-panel" hidden aria-label="Carbit-kirjautuminen"></main>
+    <div id="business-shell" hidden inert>
     <header class="topbar">
       <a class="brand" href="/" aria-label="Carbit työjonon etusivu">
         <span class="brand-mark">C</span>
         <span>Carbit <small>Työjono</small></span>
       </a>
-      <button class="primary compact" id="new-work-button" type="button">Uusi tiedustelu</button>
+      <div class="session-controls"><span id="session-user"></span><button class="secondary" id="logout-button" type="button">Kirjaudu ulos</button><button class="primary compact" id="new-work-button" type="button">Uusi tiedustelu</button></div>
     </header>
 
     <main class="shell">
@@ -26,6 +31,13 @@
           <span id="work-count" class="count"></span>
         </div>
         <div id="work-list" class="work-list" aria-live="polite"></div>
+        <section id="inquiry-drafts" class="inquiry-drafts" aria-labelledby="draft-list-title" hidden>
+          <h2 id="draft-list-title">Korjaamon tiedusteluluonnokset</h2>
+          <p class="notice">Käsin tallennetut keskeneräiset tiedustelut. Ei automaattista tallennusta.</p>
+          <button id="draft-list-refresh" class="secondary" type="button">Näytä / päivitä luonnokset</button>
+          <p id="draft-list-message" class="notice" role="status"></p>
+          <div id="draft-list" class="work-list"></div>
+        </section>
       </section>
 
       <section class="detail-panel" id="detail-panel" aria-live="polite">
@@ -56,7 +68,6 @@
             </div>
             <div class="form-grid">
               <label>Työaika (h)<input name="hours" type="number" min="0" step="any" required></label>
-              <label>Kirjaaja<input name="recorded_by" required maxlength="200"></label>
               <label class="wide">Autodatan työn kuvaus<textarea name="work_description" rows="3" required maxlength="2000"></textarea></label>
               <label class="wide">Autodata-viite (valinnainen)<input name="autodata_reference" maxlength="500"></label>
             </div>
@@ -81,11 +92,20 @@
         <div class="dialog-heading"><div><p class="overline">Uusi työ</p><h2>Uusi työtiedustelu</h2></div><button class="icon-button" type="button" data-close aria-label="Sulje">×</button></div>
         <label>Rekisterinumero<input name="registration" required maxlength="20" autocomplete="off"></label>
         <label>Asiakkaan alkuperäinen työkuvaus<textarea name="customer_description" rows="5" required maxlength="4000"></textarea></label>
-        <label>Kirjaaja<input name="actor" required maxlength="200"></label>
         <p class="form-error hidden" id="new-work-error" role="alert"></p>
+        <section id="draft-controls" aria-label="Tiedusteluluonnoksen tallennus">
+          <p id="draft-message" class="notice" role="status" aria-live="polite"></p>
+          <p id="draft-expiry" class="notice"></p>
+          <div class="draft-actions">
+            <button id="draft-save" class="secondary" type="button">Tallenna luonnos</button>
+            <button id="draft-retry" class="secondary" type="button" hidden>Uusi sama tallennus</button>
+            <button id="draft-reload" class="secondary" type="button" hidden>Avaa palvelimen versio</button>
+          </div>
+        </section>
         <div class="dialog-actions"><button class="secondary" type="button" data-close>Peruuta</button><button class="primary" type="submit">Tallenna tiedustelu</button></div>
       </form>
     </dialog>
     <div id="toast" class="toast hidden" role="status"></div>
+    </div>
   </body>
 </html>

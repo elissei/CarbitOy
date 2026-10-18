@@ -1,0 +1,10 @@
+# Lock generation only, in a separate environment; never install in the app venv.
+# Versions observed in the isolated Windows lock-tools environment.
+pip==25.1.1
+pip-tools==7.6.2
+build==1.6.1
+click==8.5.0
+packaging==26.3
+pyproject-hooks==1.3.3
+setuptools==84.0.0
+wheel==0.48.0

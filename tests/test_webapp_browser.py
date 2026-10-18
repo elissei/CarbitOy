@@ -9,7 +9,16 @@ import pytest
 import uvicorn
 from playwright.sync_api import expect, sync_playwright
 
-from webapp.main import create_app
+from http_auth_support import create_test_app as create_app, grant_session, local_tls_files, settings_for
+from webapp.auth_models import SessionCookiePolicy
+
+
+class LocalApp(tuple):
+    def __new__(cls, url, repository, token, auth_service):
+        result = super().__new__(cls, (url, repository))
+        result.token = token
+        result.auth_service = auth_service
+        return result
 
 
 @pytest.fixture(scope="module")
@@ -22,10 +31,15 @@ def browser():
 
 @pytest.fixture
 def local_app(tmp_path):
-    app = create_app(tmp_path / "browser.db")
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
-    server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
+    url = f"https://127.0.0.1:{listener.getsockname()[1]}"
+    app = create_app(tmp_path / "browser.db", auth_settings=settings_for(tmp_path / "auth.db", url))
+    cert_path, key_path = local_tls_files(tmp_path)
+    server = uvicorn.Server(uvicorn.Config(
+        app, log_level="critical", proxy_headers=False,
+        ssl_certfile=str(cert_path), ssl_keyfile=str(key_path),
+    ))
     thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
     thread.start()
     try:
@@ -34,7 +48,8 @@ def local_app(tmp_path):
             if not thread.is_alive() or time.monotonic() > deadline:
                 raise RuntimeError("Local test server did not start")
             threading.Event().wait(0.01)
-        yield f"http://127.0.0.1:{listener.getsockname()[1]}", app.state.repository
+        grant = grant_session(app.state.auth_service)
+        yield LocalApp(url, app.state.repository, grant.token.get_secret_value(), app.state.auth_service)
     finally:
         server.should_exit = True
         thread.join(timeout=10)
@@ -42,8 +57,12 @@ def local_app(tmp_path):
 
 
 @pytest.fixture
-def page(browser):
-    context = browser.new_context(viewport={"width": 1280, "height": 900})
+def page(browser, local_app):
+    context = browser.new_context(viewport={"width": 1280, "height": 900}, ignore_https_errors=True)
+    context.add_cookies([{
+        "name": SessionCookiePolicy().name, "value": local_app.token, "url": local_app[0],
+        "secure": True, "httpOnly": True, "sameSite": "Strict",
+    }])
     page = context.new_page()
     yield page
     page.unroute_all(behavior="ignoreErrors")
@@ -66,14 +85,12 @@ def open_work(page, registration):
 def fill_labour(page, description="Keksitty Autodata-työ", hours="1.60"):
     page.locator('#labour-form [name="hours"]').fill(hours)
     page.locator('#labour-form [name="work_description"]').fill(description)
-    page.locator('#labour-form [name="recorded_by"]').fill("Testikirjaaja")
 
 
-def fill_inquiry(page, actor="Testikirjaaja"):
+def fill_inquiry(page, description="Keksitty tiedustelu"):
     page.locator("#new-work-button").click()
     page.locator('#new-work-form [name="registration"]').fill("TEST-NEW")
-    page.locator('#new-work-form [name="customer_description"]').fill("Keksitty tiedustelu")
-    page.locator('#new-work-form [name="actor"]').fill(actor)
+    page.locator('#new-work-form [name="customer_description"]').fill(description)
 
 
 def wait_for_held(page, held, key):
@@ -190,9 +207,9 @@ def test_validation_errors_are_finnish_and_text_detail_is_preserved(page, local_
     url, repository = local_app
     work = seed(repository, "TEST-ERROR")
     page.goto(url, wait_until="networkidle")
-    fill_inquiry(page, actor="   ")
+    fill_inquiry(page, description="   ")
     page.locator('#new-work-form button[type="submit"]').click()
-    expect(page.locator("#new-work-error")).to_have_text("Kirjaaja: Kenttä ei voi olla tyhjä.")
+    expect(page.locator("#new-work-error")).to_have_text("Asiakkaan alkuperäinen työkuvaus: Kenttä ei voi olla tyhjä.")
     page.locator('#new-work-form [data-close]').first.click()
     open_work(page, "TEST-ERROR")
     fill_labour(page, hours="0")
@@ -237,3 +254,235 @@ def test_currency_formatting_keeps_string_precision(page, local_app):
     page.goto(local_app[0], wait_until="networkidle")
     formatted = page.evaluate("formatMoney('9007199254740993.01')")
     assert formatted.replace("\u00a0", " ") == "9 007 199 254 740 993,01 €"
+
+
+def test_forms_send_no_actor_fields_and_history_uses_authenticated_snapshot(page, local_app):
+    writes = []
+    page.on("request", lambda request: writes.append(request.post_data_json)
+            if request.method in {"POST", "PUT"} else None)
+    page.goto(local_app[0], wait_until="networkidle")
+    assert page.locator('[name="actor"], [name="recorded_by"]').count() == 0
+    fill_inquiry(page)
+    page.locator('#new-work-form button[type="submit"]').click()
+    expect(page.locator("#detail-registration")).to_have_text("TEST-NEW")
+    fill_labour(page)
+    page.locator('#labour-form button[type="submit"]').click()
+    expect(page.locator("#event-list li")).to_have_count(2)
+    user = local_app.auth_service.inspect_session(local_app.token).user
+    expect(page.locator("#event-list")).to_contain_text(user.display_name)
+    expect(page.locator("#event-list")).to_contain_text(str(user.user_id))
+    expect(page.locator("#event-list")).to_contain_text("kirjautunut käyttäjä")
+    assert len(writes) == 2 and all("actor" not in body and "recorded_by" not in body for body in writes)
+
+
+def test_legacy_uuid_label_is_not_rendered_as_authenticated(page, local_app):
+    label = str(uuid4())
+    work = local_app[1].create_work(registration="TEST-LEGACY", customer_description="Fictional history",
+                                  actor=label, idempotency_key=str(uuid4()))
+    page.goto(local_app[0], wait_until="networkidle")
+    open_work(page, "TEST-LEGACY")
+    expect(page.locator("#event-list")).to_contain_text(label + " (vanha itse ilmoitettu kirjaaja)")
+    assert local_app[1].get_work(work["id"])["events"] == work["events"]
+
+
+def test_csrf_is_lazy_and_cached_across_form_writes(page, local_app):
+    bootstraps = []
+    page.on("request", lambda request: bootstraps.append(request) if request.url.endswith("/api/auth/csrf") else None)
+    page.goto(local_app[0], wait_until="networkidle")
+    assert bootstraps == []
+    fill_inquiry(page)
+    page.locator('#new-work-form button[type="submit"]').click()
+    expect(page.locator("#detail-registration")).to_have_text("TEST-NEW")
+    fill_labour(page)
+    page.locator('#labour-form button[type="submit"]').click()
+    expect(page.locator("#price-summary")).to_contain_text("144,00")
+    assert len(bootstraps) == 1
+    assert bootstraps[0].headers["x-carbit-auth"] == "bootstrap"
+    assert page.evaluate("localStorage.length === 0 && sessionStorage.length === 0")
+
+
+def test_concurrent_writes_share_one_pending_bootstrap(page, local_app):
+    held = []
+    page.route("**/api/auth/csrf", lambda route: held.append(route))
+    page.goto(local_app[0], wait_until="networkidle")
+    payloads = [dict(registration="TEST-" + suffix, customer_description="Fictional concurrent write",
+                     actor="Legacy", idempotency_key=str(uuid4())) for suffix in ("A", "B")]
+    page.evaluate("""payloads => {
+      window.concurrentResults = null;
+      Promise.all(payloads.map(payload => api('/api/works', {
+        method: 'POST', body: JSON.stringify(payload)
+      }))).then(results => { window.concurrentResults = results; });
+    }""", payloads)
+    wait_for_held(page, held, 0)
+    assert len(held) == 1 and local_app[1].list_works() == []
+    held[0].fulfill(response=held[0].fetch())
+    page.wait_for_function("window.concurrentResults?.length === 2")
+    assert len(held) == 1 and len(local_app[1].list_works()) == 2
+
+
+def test_cache_expiry_refreshes_once_without_background_polling(page, local_app):
+    from datetime import timedelta
+    bootstraps = []
+    page.on("request", lambda request: bootstraps.append(request) if request.url.endswith("/api/auth/csrf") else None)
+    page.goto(local_app[0], wait_until="networkidle")
+    page.evaluate("sessionProof()")
+    assert len(bootstraps) == 1
+    later = local_app.auth_service.clock() + timedelta(seconds=601)
+    local_app.auth_service.clock = lambda: later
+    page.evaluate("""() => {
+      const previousNow = Date.now;
+      Date.now = () => previousNow() + 601000;
+    }""")
+    page.evaluate("Promise.all([sessionProof(), sessionProof()])")
+    assert len(bootstraps) == 2
+    page.evaluate("sessionProof()")
+    assert len(bootstraps) == 2
+
+
+def test_failed_bootstrap_preserves_form_key_and_never_sends_write(page, local_app):
+    bootstraps, writes = [], []
+    def bootstrap(route):
+        bootstraps.append(route)
+        if len(bootstraps) == 1:
+            route.fulfill(status=429, json={"detail": "Authentication temporarily limited"})
+        else:
+            route.continue_()
+    page.route("**/api/auth/csrf", bootstrap)
+    page.on("request", lambda request: writes.append(request) if request.method == "POST" else None)
+    page.goto(local_app[0], wait_until="networkidle")
+    fill_inquiry(page)
+    key = page.evaluate("state.creationKey")
+    page.locator('#new-work-form button[type="submit"]').click()
+    expect(page.locator("#new-work-error")).to_have_text("Liian monta pyyntöä. Odota hetki ennen uutta yritystä.")
+    expect(page.locator('#new-work-form [name="customer_description"]')).to_have_value("Keksitty tiedustelu")
+    assert page.evaluate("state.creationKey") == key
+    assert len(bootstraps) == 1 and writes == [] and local_app[1].list_works() == []
+    page.locator('#new-work-form button[type="submit"]').click()
+    expect(page.locator("#detail-registration")).to_have_text("TEST-NEW")
+    assert len(bootstraps) == 2 and len(writes) == 1
+    assert writes[0].post_data_json["idempotency_key"] == key
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_rejected_write_invalidates_cache_without_automatic_retry(page, local_app, status):
+    writes, bootstraps = [], []
+    def write(route):
+        if route.request.method != "POST":
+            route.continue_()
+            return
+        writes.append(route.request)
+        if len(writes) == 1:
+            route.fulfill(status=status, json={"detail": "Fictional security rejection"})
+        else:
+            route.continue_()
+    page.route("**/api/works", write)
+    page.on("request", lambda request: bootstraps.append(request) if request.url.endswith("/api/auth/csrf") else None)
+    page.goto(local_app[0], wait_until="networkidle")
+    fill_inquiry(page)
+    page.locator('#new-work-form button[type="submit"]').click()
+    expect(page.locator("#new-work-error")).to_have_text("Fictional security rejection")
+    expect(page.locator('#new-work-form [name="customer_description"]')).to_have_value("Keksitty tiedustelu")
+    assert len(writes) == 1 and len(bootstraps) == 1
+    assert page.evaluate("sessionCsrf === null")
+    if status == 401:
+        # A rejected session locks the UI. Only explicit server confirmation
+        # can restore this same user's draft; no business write is replayed.
+        expect(page.locator("#auth-panel")).to_have_attribute("data-state", "expired")
+        page.locator("#auth-check").click()
+        expect(page.locator("#new-work-dialog")).to_be_visible()
+        assert len(writes) == 1
+    page.locator('#new-work-form button[type="submit"]').click()
+    expect(page.locator("#detail-registration")).to_have_text("TEST-NEW")
+    assert len(writes) == 2 and len(bootstraps) == 2
+    assert writes[0].post_data_json["idempotency_key"] == writes[1].post_data_json["idempotency_key"]
+
+
+def test_lost_labour_response_is_not_retried_and_keeps_draft_and_version(page, local_app):
+    work = seed(local_app[1], "TEST-LOST")
+    writes = []
+    def write(route):
+        writes.append(route.request)
+        if len(writes) == 1:
+            route.fetch()  # Commit succeeded; only the response is lost.
+            route.abort()
+        else:
+            route.continue_()
+    page.route(f"**/api/works/{work['id']}/labour", write)
+    page.goto(local_app[0], wait_until="networkidle")
+    open_work(page, "TEST-LOST")
+    fill_labour(page, "Tallentamaton vastaus")
+    page.locator('#labour-form button[type="submit"]').click()
+    expect(page.locator("#labour-error")).to_be_visible()
+    expect(page.locator('#labour-form [name="work_description"]')).to_have_value("Tallentamaton vastaus")
+    expect(page.locator("#labour-form")).to_have_attribute("data-version", "1")
+    assert len(writes) == 1 and local_app[1].get_work(work["id"])["version"] == 2
+    page.locator('#labour-form button[type="submit"]').click()
+    expect(page.locator("#labour-error")).to_contain_text("toisessa selainikkunassa")
+    assert len(writes) == 2 and len(local_app[1].get_work(work["id"])["events"]) == 2
+
+
+def test_non_session_bootstrap_never_sends_business_write(page, local_app):
+    writes = []
+    page.on("request", lambda request: writes.append(request) if request.method == "POST" else None)
+    page.goto(local_app[0], wait_until="networkidle")
+    fill_inquiry(page)
+    local_app.auth_service.revoke_session(local_app.token)
+    page.locator('#new-work-form button[type="submit"]').click()
+    expect(page.locator("#new-work-error")).to_have_text("Kirjautuminen on vanhentunut. Kirjaudu uudelleen.")
+    expect(page.locator('#new-work-form [name="registration"]')).to_have_value("TEST-NEW")
+    assert writes == [] and local_app[1].list_works() == []
+
+
+def test_invalidated_pending_refresh_cannot_restore_cached_proof(page, local_app):
+    held = []
+    page.route("**/api/auth/csrf", lambda route: held.append(route))
+    page.goto(local_app[0], wait_until="networkidle")
+    page.evaluate("""() => {
+      window.proofOutcome = 'pending';
+      sessionProof().then(() => { window.proofOutcome = 'accepted'; })
+        .catch(() => { window.proofOutcome = 'rejected'; });
+    }""")
+    wait_for_held(page, held, 0)
+    page.evaluate("forgetSessionCsrf()")
+    held[0].fulfill(response=held[0].fetch())
+    page.wait_for_function("window.proofOutcome === 'rejected'")
+    assert page.evaluate("sessionCsrf === null && csrfRefresh === null")
+    assert len(held) == 1
+
+
+def test_repeated_page_loads_do_not_hit_credential_rate_limits(page, local_app):
+    auth_responses = []
+    page.on("response", lambda response: auth_responses.append((response.url, response.status))
+            if "/api/auth/" in response.url else None)
+    for _ in range(7):
+        page.goto(local_app[0], wait_until="networkidle")
+        expect(page.locator("#business-shell")).to_be_visible()
+    sessions = [status for url, status in auth_responses if url.endswith("/api/auth/session")]
+    assert len(sessions) == 7 and sessions == [200] * 7
+    assert not any(url.endswith("/api/auth/csrf") for url, _ in auth_responses)
+    assert page.evaluate("localStorage.length === 0 && sessionStorage.length === 0")
+
+
+def test_seven_tabs_share_session_and_reuse_each_tabs_csrf_proof(page, local_app):
+    auth_responses = []
+    page.context.on("response", lambda response: auth_responses.append((response.url, response.status))
+                    if "/api/auth/" in response.url else None)
+    tabs = [page] + [page.context.new_page() for _ in range(6)]
+    try:
+        for tab in tabs:
+            tab.goto(local_app[0], wait_until="networkidle")
+            expect(tab.locator("#business-shell")).to_be_visible()
+            assert tab.evaluate("""async () => {
+                const proof = await sessionProof();
+                const reused = await Promise.all(Array.from({length: 8}, () => sessionProof()));
+                return typeof proof === 'string' && reused.every(value => value === proof);
+            }""")
+        for tab in tabs:
+            expect(tab.locator("#business-shell")).to_be_visible()
+        sessions = [status for url, status in auth_responses if url.endswith("/api/auth/session")]
+        proofs = [status for url, status in auth_responses if url.endswith("/api/auth/csrf")]
+        assert len(sessions) == 7 and sessions == [200] * 7
+        assert len(proofs) == 7 and proofs == [200] * 7
+    finally:
+        for tab in tabs[1:]:
+            tab.close()

@@ -1,0 +1,9 @@
+# Web application runtime. Compile on each target OS/Python; do not deploy .in files.
+-c baseline.txt
+fastapi>=0.115,<1
+pydantic>=2,<3
+PyYAML>=6,<7
+uvicorn[standard]>=0.32,<1
+argon2-cffi==25.1.0
+cryptography==50.0.2
+pyotp==2.10.0

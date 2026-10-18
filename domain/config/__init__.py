@@ -1,0 +1,1 @@
+"""Explicit workshop domain configuration."""

@@ -1,6 +1,3 @@
-fastapi>=0.115,<1
-httpx>=0.27,<1
-openai>=2,<3
-playwright>=1.55,<2
-pytest>=8,<10
-uvicorn[standard]>=0.32,<1
+# Compatibility entry point for Windows AMD64 / CPython 3.13 development.
+# Ubuntu 24.04 / CPython 3.12 needs its own verified locks (see docs/python-environment.md).
+-r requirements/locks/windows-amd64-py313-dev.txt
