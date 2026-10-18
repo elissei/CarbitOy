@@ -126,3 +126,18 @@ Its output separates the vehicle line, parts and labour lines, and total line wi
 ## Extension Guide
 
 For another quote source, construct a proposal and a valid selection, then call `create_final_quote()`. The demo helper is intentionally limited to one part requirement; broader proposal composition needs its own handling before calling the quote rule. Keep monetary calculation in the domain rules, and use `format_final_quote()` for the fixed price wording. Implement `QuotePresenter.present()` for another description provider, and pass it to `present_final_quote()`; compose the returned description with the formatted quote in caller code when both are needed.
+
+## Domain stage 1 boundary and future labour approval
+
+Domain commit [6fb2e993](https://github.com/elissei/CarbitOy/tree/6fb2e9930e20235661aece6856c396d8db15a3a4)
+adds Side and SHOCK_ABSORBER_REPLACEMENT to the nested WorkItem, but does not
+change RawProposal, FinalQuote or quote calculations. Their single-work,
+single-selection structure remains. build_quote_presentation_input() does
+not project side, and the OpenAI work-description input still contains only
+operation, axle and part types. Side-aware presentation is not implemented.
+
+HumanSelection approves a part candidate; it is not a work-time approval.
+LabourPlan aggregation and LabourTimeAdjustment history/authorization are
+future work described in [Proposal Decisions](./proposal-decisions.md).
+A future complete quotation must block on unresolved required work times;
+the current model does not implement that planned review state.

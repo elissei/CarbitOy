@@ -2,7 +2,21 @@
 
 Päivitetty 6.10.2026. Toteutetun logiikan lähde on [`4de26b4`](https://github.com/elissei/CarbitOy/tree/4de26b4284280fdd8c3867e01e8c38bcad718115), joka sisältää backend-muutokset commitin `0d8b03c` loppuun asti. Myöhemmät muutokset eivät päivity kuviin automaattisesti.
 
-## Nykyinen toteutettu kokonaisketju
+## Domain-vaihe 1: toteutettu 9.10.2026
+
+Ajantasainen domain-lähde on [feature/autodata-labour, commit 6fb2e993](https://github.com/elissei/CarbitOy/tree/6fb2e9930e20235661aece6856c396d8db15a3a4).
+[Domain-vaiheen 1 käsitekaavio ja tulevan työaikalaskennan rajaus](domain-vaihe-1.md)
+erottaa toteutetun Side-käsitteen, operaation ja parivaihtokonfiguraation
+suunnitellusta LabourPlan-laskennasta sekä myöhemmistä hyväksytyistä muutoksista.
+Lähdehaaran vahvistettu testitulos on 158 läpäissyttä testiä.
+
+Alla olevat 6.10.2026 PDF- ja PNG-päätöspuut ovat historiallinen tilannekuva;
+niihin ei ole lisätty vaihetta 1, myöhempää web-työjonoa eikä uutta
+build_raw_proposal-palvelua. Niiden lähdeversio säilyy alkuperäisenä.
+Nykyiset domain- ja web-kuvaukset löytyvät
+[arkkitehtuurista](../../saaga-docs/ARCHITECTURE.md).
+
+## Toteutettu kokonaisketju — tilannekuva 6.10.2026
 
 Asiakkaan viestin tulkinta yhdistyy ehdotukseen. Ihminen valitsee varaosaehdokkaan, minkä jälkeen erillinen viimeistelykutsu muodostaa lopullisen tarjouksen.
 

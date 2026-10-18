@@ -2,6 +2,7 @@
 title: Work and Part Data
 type: concept
 sources:
+  - domain/config/pair_replacement.py
   - domain/models/enums.py
   - domain/models/vehicle.py
   - domain/models/work_item.py
@@ -28,6 +29,11 @@ sources:
 
 # Work and Part Data
 
+Domain stage 1 additions below are verified against
+[6fb2e993](https://github.com/elissei/CarbitOy/tree/6fb2e9930e20235661aece6856c396d8db15a3a4)
+on feature/autodata-labour, not the older local Python files on visuals.
+LabourPlan and LabourTimeAdjustment are future concepts only.
+
 ## Business Definition
 
 A work item describes a vehicle operation and its needed parts. The shared
@@ -41,6 +47,7 @@ supplier prices, labour, a proposal, a person's selection, and a final quote. Th
 | `domain/ontology/synonyms.yaml` | Maps Finnish and English part names to canonical product types for text lookup. |
 | `domain/ontology/locations.yaml` | Maps axle names to location phrases. |
 | `domain/ontology/part_types.yaml` | Records each canonical type's category, description, and `requires_axle` flag. |
+| `domain/config/pair_replacement.py` | Explicit workshop pair practices; currently only shock_absorber on Axle.FRONT. Independent of quantities and Autodata time. |
 
 **How to access:**
 
@@ -50,6 +57,26 @@ supplier prices, labour, a proposal, a person's selection, and a final quote. Th
 - `domain.ontology.parser.find_axle()` - finds an axle from a location phrase, defaulting to `Axle.UNKNOWN`.
 
 `parse_part_requirement()` trims and lowercases text, then checks whether it contains a synonym; the first matching canonical type in YAML order wins. It separately detects axle text and returns quantity `1` in `RequirementUnit.SET`. This is a parser default, not a package coverage decision. If no part synonym matches, it returns `None`.
+
+## Axle, side and pair semantics — implemented
+
+Axle.FRONT/REAR identifies an axle; Axle.BOTH concerns both axles.
+Side.BOTH concerns the left and right sides of the specified axle.
+NOT_APPLICABLE means side information does not apply; UNKNOWN means it is
+not known. Missing side defaults to UNKNOWN, not BOTH or NOT_APPLICABLE.
+Existing WorkItem calls and old payloads remain valid, while model_dump()
+now includes side. The stage does not add cross-field validation between
+side, axle and operation.
+
+PAIR_REPLACEMENT_RULES is an immutable tuple of frozen rules, currently
+containing only (shock_absorber, Axle.FRONT). get_pair_replacement_rule()
+uses exact canonical names and exact axle matches. Rear shock absorbers,
+other part types, Axle.BOTH and Axle.UNKNOWN have no rule. Synonyms are
+not guessed; canonical naming belongs to the ontology.
+
+A configured rule neither forces Side.BOTH nor changes a one-side request.
+It does not infer quantities, select times or prohibit unconfigured pairs.
+The ontology's RequirementUnit.PAIR and supplier Unit.PAIR remain separate.
 
 ## Data Storage
 
@@ -69,8 +96,11 @@ its separate SQLite storage and manual-entry workflow.
 | `CustomerRequestInterpretation` | `status` | Controls whether intake can build a work item. |
 | `WorkItem` | `operation` | Work operation to perform. |
 | `WorkItem` | `axle` | Axle associated with the work. |
+| `WorkItem` | `side` | Target side; defaults to Side.UNKNOWN for existing calls and payloads. |
+| `Side` | `LEFT`, `RIGHT`, `BOTH`, `NOT_APPLICABLE`, `UNKNOWN` | Left, right, both sides, side not applicable, or not known. Separate from axle. |
+| `PairReplacementRule` | `canonical_product_type`, `axle` | Frozen dataclass describing a confirmed same-axle pair practice. |
 | `WorkItem` | `part_requirements` | Required parts; the list defaults to empty. |
-| `Operation` | `BRAKE_REPLACEMENT` | Currently declared work operation. |
+| `Operation` | `BRAKE_REPLACEMENT`, `SHOCK_ABSORBER_REPLACEMENT` | Declared work operations in domain commit 6fb2e993. |
 | `Axle` | `FRONT`, `REAR`, `BOTH`, `UNKNOWN` | Shared location vocabulary for work, requirements, and products. |
 | `PartRequirement` | `canonical_product_type` | Part vocabulary name used for product matching. |
 | `PartRequirement` | `axle` | Required location when that part type needs axle matching. |
@@ -154,6 +184,7 @@ apply the sale-price multiplier.
 
 | Module | Function/Method | Purpose |
 |---------|--------|---------|
+| `domain.config.pair_replacement` | `get_pair_replacement_rule()` | Returns an exact configured rule or None for an unspecified practice. |
 | `domain.ontology.parser` | `parse_part_requirement()` | Converts recognized text to a requirement with parser defaults. |
 | `domain.ontology.parser` | `part_type_requires_axle()` | Retrieves the ontology's axle requirement for a canonical type. |
 | `domain.ontology.parser` | `find_part_type()` | Resolves an exact synonym after trimming and lowercasing. |
@@ -178,3 +209,20 @@ apply the sale-price multiplier.
 - [Local Work Queue](../features/local-work-queue.md) owns manual-entry steps and persisted labour snapshots.
 - [Customer Intake](../features/customer-intake.md) owns the message interpretation and work-item conversion flow.
 - [Final Quote and Presentation](../features/final-quote.md) owns price calculation and presentation sequence.
+
+## Future concepts — not implemented
+
+- WorkPlan: identified operations on one vehicle; no such model exists yet.
+- LabourPlan: original Autodata records, covered operation identifiers and
+  non-overlapping selected time groups. No automatic selection or aggregation
+  is present in the current models.
+- LabourTimeAdjustment: a separate approved absolute time, target, rationale,
+  approver and aware UTC timestamp; originals and previous adjustments retained.
+  Recording a MANUAL_AUTODATA value is not this kind of approval.
+- Multi-work proposal and quotation: future structures for operation and part
+  requirement identification. Current RawProposal and FinalQuote still carry
+  one WorkItem; FinalQuote has one part selection.
+
+Approved business intent and proposed rounding are recorded in the
+[decision log](../../docs/notes/paatokset.md); those rules are not implemented
+by adding Side or the pair configuration.

@@ -17,6 +17,17 @@ Kirjaa olennaiset työvaiheet ja niiden perustelut. Liitä mukaan commit, testi 
 
 ## Merkinnät
 
+### 2026-10-09 – domain-vaiheen 1 dokumentointi ja tulevien vaiheiden rajaus
+
+- **Tavoite:** Kuvata toteutettu kohdepuoli ja parivaihtokonfiguraatio erillään suunnitellusta LabourPlan-laskennasta ja myöhemmistä hyväksytyistä työaikamuutoksista.
+- **Lähtötilanne / koodin commit:** feature/autodata-labour, 6fb2e9930e20235661aece6856c396d8db15a3a4. Visuals-worktree oli puhdas commitissa f7f974b. Web-kuvauksen lähde 5be66f9 säilyy ennallaan.
+- **Tehdyt muutokset:** Arkkitehtuuri, käsitteet, tarjouspäätökset ja tarjouksen rajaus päivitetään nimetystä Git-lähteestä. Lisätään tilat erottava Mermaid-kaavio sekä päätökset P-004–P-007. Vanhat kuvat merkitään päivätyiksi tilannekuviksi.
+- **Perustelut ja vaihtoehdot:** Käyttäjä rajasi muutokset dokumentaatioon. Koodia ei tuoda mergellä tai kopioimalla visuals-haaraan. Saagan navigaatiota ja BASELINE-tiedostoa ei käsitellä päivitettynä ajotuloksena; tämä on tehtäväkohtainen käsipäivitys.
+- **Tarkistus ja tulos:** Lähdehaaran commitattu ja pushattu toteutus on vahvistettu 158 testillä edellisessä kehitystehtävässä. Tämä ei ole dokumentointityöpuussa ajettu testitulos. Dokumentoinnin linkit, sisältörajaukset ja diff tarkistetaan erikseen.
+- **Havainnot / avoimet kysymykset:** Vain etuiskunvaimentimien parivaihtokäytäntö on vahvistettu. Uusi operaatio ei vielä kuulu tarjouspohjan tekstimuotoilijan nimikarttaan; side ei välity nykyiseen AI-kuvaukseen tai web-lomakkeeseen. LabourPlan ja LabourTimeAdjustment eivät ole toteutettuja.
+- **Seuraava askel:** Käyttäjä tarkistaa dokumentointimuutokset ennen committia tai pushia. Työaikalaskennan toteutus ja valtuutetut hyväksynnät käsitellään myöhemmin erillisinä vaiheina.
+- **Linkit / tuloksen commit:** [Domain-commit](https://github.com/elissei/CarbitOy/commit/6fb2e9930e20235661aece6856c396d8db15a3a4), [päätösloki](paatokset.md), [vaiheen 1 kaavio](../visualizations/domain-vaihe-1.md). Dokumentointimuutokset ovat tarkistettavana, eivät commitattu.
+
 ### 2026-10-09 – paikallisen web-työjonon ja luotettavuuskorjausten dokumentointi
 
 - **Tavoite:** Päivittää olemassa oleva Saaga-dokumentaatio paikallisen web-sovelluksen toteutukseen ilman rinnakkaisen dokumentointirakenteen luomista.

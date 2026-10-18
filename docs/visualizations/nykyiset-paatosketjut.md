@@ -2,6 +2,10 @@
 
 Tilannekuva 6.10.2026, lähdekoodi [`4de26b4`](https://github.com/elissei/CarbitOy/tree/4de26b4284280fdd8c3867e01e8c38bcad718115). Kaaviot renderöityvät GitHubissa ja Obsidianissa. Vain toteutettu logiikka; toimittajatilaukset, CRM, Autodata ja selain-UI eivät kuulu tähän tilannekuvaan.
 
+> Tämä sivu säilyttää 6.10.2026 työnkulut. Uudempi domain-toteutus
+> ja suunnitelmien tilat: [Domain-vaihe 1](domain-vaihe-1.md).
+> Uusi parivaihtokonfiguraatio ei lisää Autodata-aikavalintaa näihin ketjuihin.
+
 ## Kokonaisketju
 
 ```mermaid

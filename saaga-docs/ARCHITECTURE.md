@@ -17,6 +17,36 @@ sources:
 
 # Architecture
 
+## Documentation scope and implementation status — 2026-10-09
+
+This corpus describes separate source snapshots: domain stage 1 in
+[feature/autodata-labour, commit 6fb2e993](https://github.com/elissei/CarbitOy/tree/6fb2e9930e20235661aece6856c396d8db15a3a4)
+and the existing local web queue in feature/web-app, commit 5be66f9.
+The domain snapshot is documented from Git without merging its Python files
+into visuals. Local source paths below refer to their named source snapshot;
+the visuals checkout is not a combined implementation of both branches.
+
+| Status | Capability |
+| --- | --- |
+| Implemented in 6fb2e993 | Side vocabulary; WorkItem.side defaulting to UNKNOWN; SHOCK_ABSORBER_REPLACEMENT; explicit front shock absorber pair configuration. |
+| Already implemented in the domain snapshot | Single-work build_raw_proposal service with caller-supplied LabourTime, inclusive pricing, empty default candidates and an aware UTC creation time. |
+| Planned, not implemented | WorkPlan/LabourPlan, Autodata pair/combined-time selection, multi-operation time aggregation and complete multi-work quotation. |
+| Later, not implemented | LabourTimeAdjustment, authorized approval, reasons and timestamps, retention of original times and adjustment history. |
+
+The recorded domain verification result is **158 passing tests** at 6fb2e993.
+This is the source branch's test result, not a test run of the visuals checkout.
+
+The pair configuration is descriptive and queried explicitly. It does not
+change work scope or parts quantities, require a pair, call Autodata or
+calculate time. Only front shock absorbers are configured; other part types
+and axles remain unspecified. The ontology PAIR unit describes quantities
+and packaging, not a work-time selection policy.
+
+The unchanged raw-proposal text formatter still labels only brake replacement.
+The new shock absorber operation is a domain capability, not a completed
+intake, rendering or web flow. See [Work and Part Data](./concepts/work-and-part-data.md)
+and [Proposal Decisions](./features/proposal-decisions.md).
+
 ## Overall Architecture
 
 CarbitOy is a system under development for automating an automotive workshop's workflow from work order intake through supplier comparison and human-approved parts selection to a customer quotation.
@@ -69,6 +99,14 @@ Pydantic models carry vehicle and work data, supplier facts, labour, proposals, 
 They validate relationships including proposal labour hours and final quote identity, currency, purchase price, and total.
 [Work and Part Data](./concepts/work-and-part-data.md) owns their fields and validation contracts.
 
+### Workshop configuration — `domain/config/`
+
+In domain commit 6fb2e993, pair_replacement.py contains a tuple of frozen
+PairReplacementRule records and get_pair_replacement_rule(). Exact canonical
+part type and axle lookup returns a rule or None. None means unconfirmed,
+not forbidden. This module imports only the domain Axle vocabulary.
+No existing application or web workflow automatically consumes the rule.
+
 ### Domain ontology — `domain/ontology/`
 
 YAML vocabulary and a parser map part and axle terms to canonical work data. The parser uses PyYAML and domain models;
@@ -111,8 +149,10 @@ workflow also imports the presenter interface. [Proposal Decisions](./features/p
 ### Application services — `services/`
 
 This layer prices `LabourTime` into a shared `LabourCost` and splits an inclusive total into net and VAT for the web workflow.
-It imports shared models; the library proposal rule is separate. [Local Work Queue](./features/local-work-queue.md) owns the
-web pricing behavior, while [Proposal Decisions](./features/proposal-decisions.md) owns the library calculation.
+In domain commit 6fb2e993, `services/proposal_builder.py` also provides `build_raw_proposal()`,
+which uses that pricing service and the unchanged RawProposal model. It is separate from the frozen
+demo's older library labour rule. [Local Work Queue](./features/local-work-queue.md) owns the
+web workflow; [Proposal Decisions](./features/proposal-decisions.md) describes the two proposal entry points.
 
 ### Web application — `webapp/`
 
@@ -131,3 +171,26 @@ interpretation, and quote description generation depend on caller-chosen adapter
 a database path; otherwise it reads `CARBIT_DATABASE` or uses the repository's `var/carbit.db`. The server initializes
 storage at startup. Web dependencies, including FastAPI and Uvicorn, are listed in `requirements-web.txt`. The web
 routes and storage behavior belong to [Local Work Queue](./features/local-work-queue.md). No command-line entry point is present.
+
+## Planned labour architecture — not implemented
+
+LabourPlan will select non-overlapping groups of original Autodata time records.
+For a same-operation pair, an available pair time replaces individual side times;
+a missing pair time leaves the plan awaiting human review. Distinct operations
+are summed by default, with no automatic overlap deduction. An exact Autodata
+combined-work time may replace the times of the operations it covers, retaining
+its provenance. Each operation must be counted exactly once.
+
+The proposed pricing policy keeps full Decimal hours and rounds one overall
+VAT-inclusive labour charge half up to cents at 90.00 EUR/h, then uses the existing
+inclusive VAT split at 25.5%. This aggregation is a plan, not behavior of the
+current single-time builder. Later LabourTimeAdjustment records will replace
+effective time without overwriting original Autodata records. Neither planned
+structure exists in the documented implementation.
+
+The separate web queue currently stores a single manual Autodata snapshot and
+versioned events. That history is not a LabourTimeAdjustment approval mechanism;
+the local web queue has no authentication. A later integration must add approval
+authorization and structured provenance while preserving version checks and
+atomic data/event writes. See [decision log](../docs/notes/paatokset.md)
+and the [status-separated diagram](../docs/visualizations/domain-vaihe-1.md).
