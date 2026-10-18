@@ -122,8 +122,11 @@ function CarbitInquiryDrafts({ api, form, dialog, workBusy }) {
     const current = ++listEpoch;
     refresh.disabled = true;
     listMessage.textContent = "Haetaan korjaamon luonnoksia…";
+    // Same bound as open: a stalled list must not keep the refresh button locked.
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
     try {
-      const values = await api("/api/drafts?limit=100");
+      const values = await api("/api/drafts?limit=100", { signal: controller.signal });
       if (current !== listEpoch) return;
       list.replaceChildren();
       for (const value of values.filter(row => row.draft_type === "WORK_INQUIRY")) {
@@ -138,8 +141,13 @@ function CarbitInquiryDrafts({ api, form, dialog, workBusy }) {
         ? "Lista on rajattu palvelimen 100 luonnokseen, myös työaikaluonnokset lasketaan rajaan. Kaikki tiedusteluluonnokset eivät välttämättä näy."
         : list.childElementCount ? "Valitse luonnos jatkaaksesi. Vain käsin tallennettu versio säilyy." : "Ei korjaamon aktiivisia tiedusteluluonnoksia.";
     } catch (problem) {
-      if (current === listEpoch) listMessage.textContent = readError(problem);
+      if (current === listEpoch) {
+        listMessage.textContent = controller.signal.aborted
+          ? "Luonnosluettelon haku keskeytettiin, koska palvelin ei vastannut 15 sekunnissa. Lomakkeen sisältö säilyi. Yritä hakua uudelleen."
+          : readError(problem);
+      }
     } finally {
+      window.clearTimeout(timeout);
       if (current === listEpoch) refresh.disabled = false;
     }
   }

@@ -789,3 +789,199 @@ def test_identity_switch_clears_unknown_request_but_new_staff_can_fetch_shared_s
     assert form(page,'customer_description').input_value()==''
     assert page.locator('#draft-list').inner_text()==''
     assert writes==[]
+
+
+DAY_MS = 86_400_000
+
+
+def browser_ms(value):
+    """Playwright clock times as datetimes; a bare number is not interpreted as epoch milliseconds."""
+    return datetime.fromtimestamp(value / 1000, timezone.utc)
+
+
+def hold_lists(tab):
+    """Hold real list GET responses in the browser route; record aborted list requests."""
+    held, failures = [], []
+    listing = lambda url: "/api/drafts?limit=100" in url
+
+    def hold(route):
+        if held:  # Only the first list request is held; later ones reach the real server.
+            route.continue_()
+            return
+        held.append((route, route.fetch()))
+        tab.evaluate("window.draftListsHeld = (window.draftListsHeld || 0) + 1")
+
+    tab.on("requestfailed", lambda request: failures.append(request.failure)
+           if listing(request.url) else None)
+    tab.route(listing, hold)
+    return held, failures, listing
+
+
+def settle(tab):
+    tab.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+
+
+def test_stalled_list_refresh_times_out_keeps_form_and_stale_list_cannot_replace_newer(page, local_app):
+    page.clock.install()
+    start(page, local_app, "Luonnos A", "TEST-A")
+    save(page)
+    # Edited after the save and left unsaved: the list timeout must not drop or "clean" it.
+    form(page, "customer_description").fill("Tallennuksen jälkeen muokattu, tallentamaton A")
+    unsaved = lambda: page.locator("#draft-message").text_content()
+    assert "Tallentamattomia muutoksia" in unsaved()
+    close(page)
+    held, failures, listing = hold_lists(page)
+    page.locator("#draft-list-refresh").click()
+    page.wait_for_function("window.draftListsHeld === 1")
+    expect(page.locator("#draft-list-refresh")).to_be_disabled()
+    page.clock.fast_forward(15000)  # Controlled browser time, no sleep-based race.
+    expect(page.locator("#draft-list-message")).to_contain_text("Luonnosluettelon haku keskeytettiin")
+    expect(page.locator("#draft-list-refresh")).to_be_enabled()
+    assert failures == ["net::ERR_ABORTED"]
+    assert form(page, "customer_description").input_value() == "Tallennuksen jälkeen muokattu, tallentamaton A"
+    assert "Tallentamattomia muutoksia" in unsaved()
+    mutation(page, "/api/drafts", "POST", {"draft_type": "WORK_INQUIRY", "request_id": str(uuid4()),
+        "payload": {"registration": "TEST-B", "customer_description": "Luonnos B"}})
+    with page.expect_response(lambda r: "/api/drafts?limit=100" in r.url):
+        page.locator("#draft-list-refresh").click()
+    expect(page.locator(".draft-row")).to_have_count(2)
+    held[0][0].fulfill(response=held[0][1])  # The aborted one-row response can no longer reach the page.
+    settle(page)
+    page.unroute(listing)
+    expect(page.locator(".draft-row")).to_have_count(2)
+    expect(page.locator("#draft-list-message")).to_contain_text("Valitse luonnos jatkaaksesi")
+    assert form(page, "customer_description").input_value() == "Tallennuksen jälkeen muokattu, tallentamaton A"
+    assert "Tallentamattomia muutoksia" in unsaved()
+    assert counts(local_app) == (2, 0)
+
+
+def test_late_list_response_after_identity_switch_cannot_fill_new_users_view(page, local_app, other_staff):
+    _, staff = other_staff
+    start(page, local_app, "Edellisen käyttäjän listarivi", "TEST-LIST")
+    save(page)
+    close(page)
+    held, failures, listing = hold_lists(page)
+    page.locator("#draft-list-refresh").click()
+    page.wait_for_function("window.draftListsHeld === 1")
+    page.context.add_cookies([{"name": SessionCookiePolicy().name, "value": staff.token.get_secret_value(),
+        "url": local_app[0], "secure": True, "httpOnly": True, "sameSite": "Strict"}])
+    page.evaluate("CarbitAuth.lock()")
+    page.locator("#auth-check").click()
+    expect(page.locator("#business-shell")).to_be_visible()
+    held[0][0].fulfill(response=held[0][1])  # Real late delivery, before any list timeout.
+    settle(page)
+    assert failures == []
+    expect(page.locator(".draft-row")).to_have_count(0)
+    assert page.locator("#draft-list-message").inner_text() == ""
+    expect(page.locator("#draft-list-refresh")).to_be_enabled()
+    assert form(page, "customer_description").input_value() == ""
+    page.unroute(listing)
+
+
+def lose_first_create(tab):
+    """Commit a real POST on the server but lose its response; return the sent envelopes."""
+    lost = []
+
+    def lose(route):
+        if route.request.method == "POST" and not lost:
+            response = route.fetch()
+            assert response.ok
+            lost.append(route.request.post_data_json)
+            route.abort("failed")
+        else:
+            route.continue_()
+
+    tab.route("**/api/drafts", lose)
+    return lost, lose
+
+
+def relogin_same_user(tab, app, user, server_shift):
+    """End the browser session and log the same person in again with password and MFA."""
+    tab.context.clear_cookies()
+    tab.evaluate("CarbitAuth.lock()")
+    app.auth_service.clock = lambda: datetime.now(timezone.utc) + server_shift
+    tab.locator("#auth-check").click()
+    password(tab, app, user)
+    mfa(tab, app, user)
+
+
+def test_same_user_relogin_keeps_unknown_save_and_retries_exact_envelope(page, local_app):
+    user = user_for(local_app)
+    start(page, local_app, "Ennen uudelleenkirjautumista lähetetty", "TEST-RELOGIN")
+    lost, lose = lose_first_create(page)
+    page.locator("#draft-save").click()
+    expect(page.locator("#draft-message")).to_contain_text("tulos jäi epäselväksi")
+    page.unroute("**/api/drafts", lose)
+    form(page, "customer_description").fill("Myöhempi tallentamaton teksti")
+    relogin_same_user(page, local_app, user, timedelta(seconds=60))
+    expect(page.locator("#new-work-dialog")).to_be_visible()
+    expect(form(page, "customer_description")).to_have_value("Myöhempi tallentamaton teksti")
+    expect(page.locator("#draft-retry")).to_be_visible()
+    with page.expect_response(lambda r: r.request.method == "POST" and "/api/drafts" in r.url) as response:
+        page.locator("#draft-retry").click()
+    expect(page.locator("#draft-message")).to_contain_text("Luonnos tallennettu.")
+    assert response.value.request.post_data_json == lost[0]
+    draft_id = response.value.json()["draft_id"]
+    assert stored(local_app, draft_id)[0]["customer_description"] == "Ennen uudelleenkirjautumista lähetetty"
+    expect(form(page, "customer_description")).to_have_value("Myöhempi tallentamaton teksti")
+    assert counts(local_app) == (1, 0)
+    assert page.evaluate("localStorage.length === 0 && sessionStorage.length === 0")
+
+
+@pytest.mark.parametrize("age_ms,retried", [(DAY_MS - 1, True), (DAY_MS, False)])
+def test_unknown_save_day_limit_boundary_after_same_user_relogin(page, local_app, age_ms, retried):
+    user = user_for(local_app)
+    page.clock.install()
+    start(page, local_app, "Vuorokauden rajan teksti", "TEST-DAY")
+    started = page.evaluate("Date.now()") + 1000
+    page.clock.pause_at(browser_ms(started))  # Date.now() is exactly `started` when the operation is created.
+    lost, lose = lose_first_create(page)
+    page.locator("#draft-save").click()
+    expect(page.locator("#draft-message")).to_contain_text("tulos jäi epäselväksi")
+    page.unroute("**/api/drafts", lose)
+    page.clock.resume()
+    # A real session cannot live a day: the same person logs in again in server time one day later.
+    relogin_same_user(page, local_app, user, timedelta(milliseconds=DAY_MS, seconds=60))
+    expect(page.locator("#draft-retry")).to_be_visible()
+    page.clock.pause_at(browser_ms(started + age_ms))
+    writes = []
+    page.on("request", lambda r: writes.append(r.post_data_json)
+            if r.method in ("POST", "PUT") and "/api/drafts" in r.url else None)
+    page.locator("#draft-retry").click()
+    if retried:
+        expect(page.locator("#draft-message")).to_contain_text("Luonnos tallennettu.")
+        assert writes == lost
+    else:
+        expect(page.locator("#draft-message")).to_contain_text("liian vanha uusittavaksi")
+        expect(page.locator("#draft-retry")).to_be_hidden()
+        expect(page.locator("#draft-save")).to_be_disabled()
+        assert writes == []
+    expect(form(page, "customer_description")).to_have_value("Vuorokauden rajan teksti")
+    assert counts(local_app) == (1, 0)  # The original commit exists either way; nothing is duplicated.
+
+
+def test_list_warns_exactly_at_server_limit_and_labour_drafts_count_toward_it(page, local_app):
+    start(page, local_app)
+    close(page)
+    created = page.evaluate("""async () => {
+        for (let i = 0; i < 99; i += 1) {
+            await api('/api/drafts', {method: 'POST', body: JSON.stringify({draft_type: 'WORK_INQUIRY',
+                request_id: crypto.randomUUID(), payload: {registration: `TEST-${i}`}})});
+        }
+        return 99;
+    }""")
+    assert counts(local_app) == (created, 0)
+    with page.expect_response(lambda r: "/api/drafts?limit=100" in r.url):
+        page.locator("#draft-list-refresh").click()
+    expect(page.locator(".draft-row")).to_have_count(99)
+    expect(page.locator("#draft-list-message")).to_contain_text("Valitse luonnos jatkaaksesi")
+    work = mutation(page, "/api/works", "POST", {"registration": "TEST-WORK", "customer_description": "Fiktiivinen työ",
+        "idempotency_key": str(uuid4())})
+    mutation(page, "/api/drafts", "POST", {"draft_type": "LABOUR_ENTRY", "request_id": str(uuid4()),
+        "work_id": work["id"], "original_work_version": work["version"], "payload": {"hours": "kesken"}})
+    with page.expect_response(lambda r: "/api/drafts?limit=100" in r.url) as response:
+        page.locator("#draft-list-refresh").click()
+    assert len(response.value.json()) == 100
+    expect(page.locator(".draft-row")).to_have_count(99)
+    expect(page.locator("#draft-list-message")).to_contain_text("Lista on rajattu palvelimen 100 luonnokseen")
+    expect(page.locator("#draft-list-message")).to_contain_text("työaikaluonnokset lasketaan rajaan")
