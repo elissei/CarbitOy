@@ -8,7 +8,9 @@ sources:
   - webapp/auth_repository.py
   - webapp/auth_service.py
   - webapp/admin_offline_recovery.py
+  - webapp/admin_recovery_cli.py
   - webapp/user_mfa_recovery.py
+  - webapp/user_recovery_cli.py
   - webapp/auth_settings.py
   - webapp/http_auth.py
   - webapp/http_access.py
@@ -17,14 +19,14 @@ sources:
   - webapp/browser_auth/login.js
   - webapp/static/app.js
   - webapp/static/index.html
-last_verified: 2026-10-19
+last_verified: 2026-10-20
 ---
 
 # Feature: Employee Authentication
 
 ## Overview
 
-An enrolled employee signs in with a password and a second factor, then uses a secure session cookie to reach Carbit's protected pages and APIs. The browser can log out; account provisioning, MFA enrollment, reset, and offline recovery are trusted Python procedures without HTTP routes.
+An enrolled employee signs in with a password and a second factor, then uses a secure session cookie to reach Carbit's protected pages and APIs. The browser can log out; account provisioning, MFA enrollment, reset, and offline recovery use trusted Python services, with local recovery consoles outside the HTTP routes.
 
 ## Key Concepts
 
@@ -52,6 +54,10 @@ Offline recovery is separate from that browser flow:
 
 Both completion calls issue fresh recovery codes once and no login session; the person signs in normally afterward. The in-person check and local confirmations are recorded statements, not checks the program can perform. Notification outbox rows record intent only, not delivery.
 
+The IT-admin console runs as `python -m webapp.admin_recovery_cli` with `status`, `start`, `start-self`, `enroll`, `complete`, and `cancel`. `start` records a separate authorizer and identity check; admin-only `start-self` records the operator's own-account and stopped-service confirmations. The business-user console runs as `python -m webapp.user_recovery_cli` with `status`, `start`, `enroll`, and `complete`. Its `start` signs in a recently TOTP-verified IT admin and attempts to revoke that console session afterward. If revocation fails, the console warns that the session remains valid until normal expiry or another revocation.
+
+Both consoles require an existing, current-schema auth SQLite database; they do not initialize or migrate it. `start`, `start-self`, `enroll`, and `complete` require an interactive console; passwords, tokens, and TOTP codes use hidden input. Admin `cancel` uses an ordinary confirmation prompt and can commit with piped standard input. `CARBIT_TOTP_KEYS` must match the service's keys. A new grant token, TOTP secret, and recovery codes are displayed only once on that console. If a step is interrupted or output fails after a write, run `status` to inspect committed state before retrying. See [MFA Emergency Recovery](../../docs/mfa-emergency-recovery.md) for command flags and the operator procedure.
+
 ### Validation Rules
 
 - Login and MFA requests require exact JSON object shapes. Authentication POST bodies are capped at 4096 bytes; duplicate JSON keys, malformed JSON, and mismatched content length are rejected.
@@ -74,7 +80,8 @@ Both completion calls issue fresh recovery codes once and no login session; the 
 | Password valid but MFA is not enrolled | Ordinary first enrollment can receive an internal enrollment challenge; after reset, `mfa_recovery_required` blocks password-only enrollment. HTTP login returns generic failure and no session in either case. |
 | Business-user recovery grant expires or is superseded | The grant cannot complete; the account remains recovery-required until a newly authorized recovery completes. |
 | IT-admin recovery expires or is cancelled | The grant cannot complete; the account remains disabled until a new offline recovery completes. |
-| Recovery start or completion is replayed | Start returns current state without the grant token; completed-grant replay returns `ALREADY_COMPLETED` without codes or a session. A changed request under the same ID conflicts. |
+| Recovery start or completion is replayed | Service start returns current state without the grant token; service completion may return `ALREADY_COMPLETED` without codes or a session. The consoles report these replays as incomplete and do not re-show one-time data. A changed request under the same ID conflicts; unusable business-user tokens at enrollment are rejected. |
+| Console command is declined, rejected, or fails after a commit | Declined steps report incomplete; validation or service denial reports rejected. A failed display or uncertain interruption reports incomplete, and `status` shows the stored state. |
 | Recovery enrollment is repeated | It replaces the pending TOTP secret; the earlier secret cannot complete recovery. |
 | Unknown or disabled account, wrong password, reused MFA step, invalid recovery code | No session; authentication failure does not identify which factor or account failed. |
 | Session, preauth, and MFA cookies appear in an invalid combination | HTTP auth state conflict or invalid context; no fallback to a weaker state. |
@@ -143,6 +150,8 @@ The auth service records rate-limit counters and audit events in the auth databa
 | `admin_offline_recovery` | `begin_admin_recovery_enrollment()` | Checks grant and admin password; returns a pending TOTP secret. |
 | `admin_offline_recovery` | `complete_admin_offline_recovery()` | Verifies new TOTP, consumes the grant, and reopens the account. |
 | `admin_offline_recovery` | `cancel_admin_offline_recovery()` | Closes an open grant while leaving the account disabled. |
+| `admin_recovery_cli` | `main()` | Runs the local IT-admin recovery command entry point. |
+| `user_recovery_cli` | `main()` | Runs the local business-user recovery command entry point. |
 | `http_auth` | `register_auth_routes()` | Registers the five concrete auth endpoints. |
 | `http_access` | `validate_route_coverage()` | Ensures every registered route has one reviewed access policy. |
 
