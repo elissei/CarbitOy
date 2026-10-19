@@ -229,6 +229,28 @@ def test_invalid_request_fields_change_nothing(world, change):
     assert user_row(world, world["owner"]) == before and not rows(world, "SELECT * FROM auth_user_recovery_grants")
 
 
+def test_future_identity_check_is_audited_as_a_rejection_without_recovery_side_effects(world):
+    owner = world["owner"]
+    before, sessions = user_row(world, owner), rows(world, "SELECT * FROM auth_sessions ORDER BY session_id")
+    payload = request(world, verified_at=world["clock"].value + timedelta(hours=1))
+    with pytest.raises(ValueError, match="future"):
+        start_user_mfa_recovery(world["service"], world["admin_token"], payload)
+    assert user_row(world, owner) == before and not rows(world, "SELECT * FROM auth_user_recovery_grants")
+    assert rows(world, "SELECT * FROM auth_sessions ORDER BY session_id") == sessions
+    assert not rows(world, "SELECT * FROM auth_notification_outbox")
+    rejected = events(world, "USER_MFA_RECOVERY_REJECTED")
+    assert [(e["request_id"], e["stage"], e["actor"], e["subject"]) for e in rejected] == [
+        (payload["request_id"], "START", str(world["admin"].user_id), str(owner.user_id))]
+    assert not events(world, "USER_MFA_RECOVERY_STARTED")
+
+
+def test_success_and_accepted_replay_record_no_rejection(world):
+    payload = request(world)
+    start_user_mfa_recovery(world["service"], world["admin_token"], payload)
+    assert start_user_mfa_recovery(world["service"], world["admin_token"], payload).replayed
+    assert not events(world, "USER_MFA_RECOVERY_REJECTED")
+
+
 def test_password_alone_cannot_enroll_after_reset_expiry_or_the_existing_reset_path(world):
     service, clock, owner = world["service"], world["clock"], world["owner"]
     start(world)

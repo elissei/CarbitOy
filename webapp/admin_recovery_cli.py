@@ -258,8 +258,8 @@ def _status(args) -> int:
     path = _auth_database(args.auth_database)
     with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as connection:
         connection.row_factory = sqlite3.Row
-        user = connection.execute("SELECT username,role,kind,enabled,mfa_enabled,auth_version FROM auth_users "
-                                  "WHERE user_id=?", (args.target_user_id,)).fetchone()
+        user = connection.execute("SELECT username,role,kind,enabled,mfa_enabled,mfa_recovery_required,auth_version "
+                                  "FROM auth_users WHERE user_id=?", (args.target_user_id,)).fetchone()
         requests = connection.execute(
             "SELECT request_id,status,created_at,expires_at,finished_at,pending_totp_ciphertext IS NOT NULL AS pending "
             "FROM auth_admin_recovery_requests WHERE target_user_id=? ORDER BY created_at, rowid",
@@ -268,7 +268,8 @@ def _status(args) -> int:
         _out("No such account.")
         return EXIT_REJECTED
     _out(f"Account {user['username']}: role {user['role']}, enabled {bool(user['enabled'])}, "
-         f"MFA {bool(user['mfa_enabled'])}, auth_version {user['auth_version']}")
+         f"MFA {bool(user['mfa_enabled'])}, recovery grant required {bool(user['mfa_recovery_required'])}, "
+         f"auth_version {user['auth_version']}")
     now = int(_clock().timestamp())
     for row in requests:
         stored = row["status"]

@@ -365,6 +365,18 @@ def test_cancel_confirmation_idempotence_and_rejections(world):
     assert cli.main(cancel + ["--request-id", completed]) == cli.EXIT_REJECTED
 
 
+def test_status_reports_the_recovery_grant_requirement(world):
+    # E.g. a legacy reset marked by the version 4 upgrade; the trigger allows the flag only without a factor.
+    legacy = world["service"].provision_identity(username="console.legacy", display_name="Fictional legacy admin",
+                                                 role=UserRole.IT_ADMIN, password=PASSWORD)
+    with world["repository"].transaction() as connection:
+        connection.execute("UPDATE auth_users SET mfa_recovery_required=1 WHERE user_id=?", (str(legacy.user_id),))
+    read(world)
+    for user, required in ((legacy, True), (world["admin"], False)):
+        assert cli.main(["status", "--auth-database", str(world["path"]), "--target-user-id", str(user.user_id)]) == 0
+        assert f"recovery grant required {required}" in read(world).out
+
+
 def test_expired_authorization_is_rejected_and_reported_by_status(world, capsys):
     assert start(world) == 0
     token = world["console"].value("Recovery authorization token")
