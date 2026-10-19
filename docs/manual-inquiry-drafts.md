@@ -65,6 +65,35 @@ Tässä ei lisätä palvelimen suodatusta tai sivutusta.
 - Luojan jäsenyyden päättyminen ei piilota luonnosta muulta aktiiviselta
   henkilöstöltä. Poistuneen käyttäjän pääsy estetään ja nykyinen expiry säilyy.
 
+## Luonnoksen hylkäys (DRAFT-A, 20.10.2026)
+
+Avatun palvelinluonnoksen voi hylätä painikkeella **Hylkää luonnos**. Kuka tahansa
+korjaamon kirjoitusoikeudellinen henkilöstön jäsen voi hylätä yhteisen luonnoksen.
+- **Vahvistus.** Vahvistusikkuna kertoo, että kyse on korjaamon yhteisestä
+  luonnoksesta, että hylkäystä ei voi perua ja että tallentamattomat muutokset
+  menetetään. Peruutus ei lähetä mitään.
+- **Pyyntö.** Hylkäys lähettää palvelimelle pyynnön
+  `POST /api/drafts/{draft_id}/discard`, jossa on uusi pyyntötunniste ja avatun
+  version `expected_revision`.
+- **Onnistuminen.** Editori tyhjenee, rivi poistuu luettelosta, eikä luonnosta
+  haeta uudelleen, koska päättynyt luonnos ei enää avaudu. Ennen hylkäystä
+  alkanut luettelohaku mitätöidään, joten sen myöhäinen vastaus ei palauta riviä.
+- **Ristiriita tai puuttuva luonnos.** Kun palvelin vastaa 409 (uudempi versio),
+  404 (luonnos jo päättynyt) tai 403, mitään ei hylätä. Lomakkeen sisältö säilyy,
+  ja palvelimen version voi avata ennen uutta päätöstä.
+- **Epäselvä tulos.** Kun yhteys katkeaa tai palvelin ei vastaa 15 sekunnissa,
+  editori lukittuu. **Uusi sama hylkäys** lähettää täsmälleen alkuperäisen
+  pyynnön samalla pyyntötunnisteella. Jos palvelin oli jo hylännyt luonnoksen,
+  uusinta palauttaa saman kuitin eikä tee toista hylkäystä.
+  - Uusinta säilyy saman käyttäjän uudelleenkirjautumisen yli ja enintään
+    vuorokauden.
+  - Käyttäjänvaihto tyhjentää uusinnan.
+- **Kollegan auki oleva editori.** Kollegan editori saa hylkäyksen jälkeen
+  seuraavasta tallennuksesta vastauksen 404 tai 409. Kollegan teksti säilyy, eikä
+  uutta luonnosta synny.
+- **Uloskirjautuminen.** Uloskirjautumisen tai käyttäjänvaihdon yhteydessä tehtävä
+  paikallinen tyhjennys ei koskaan hylkää luonnosta palvelimelta.
+
 ## Rajaus ja testit
 
 Nykyinen uuden tiedustelun **Tallenna tiedustelu** säilyy ennallaan. Palvelimelle
@@ -72,7 +101,7 @@ tallennetussa/avatussa luonnoksessa lopullinen tallennuspainike on estetty:
 luonnoksen muunnosta tai lähettämistä ei ole tässä toteutettu. Aloita erillinen
 uusi tiedustelu käyttääksesi nykyistä polkua; luonnos säilyy palvelimella.
 
-Ei autosavea, LABOUR_ENTRY-editoria, discard-UI:ta, muunnosta, lopullista työajan
+Ei autosavea, LABOUR_ENTRY-editoria, luojan tai muokkaajan näyttöä (DRAFT-B), muunnosta, lopullista työajan
 lähetystä, hyväksyntää, integraatioita, WD-3:a, SEC-2B:tä tai uusia monen korjaamon
 ominaisuuksia. Backendin käyttöoikeusraja on nyt korjaamon yhteinen; sisältö-, revision- ja
 retention-sopimus säilyy. Luoja ei vaihdu, todellisen sisältömuutoksen tekijä

@@ -1,6 +1,7 @@
 """Manual inquiry drafts through Chromium, real HTTPS/auth/CSRF and disposable SQLite."""
 
 import json
+import re
 import socket
 import threading
 import time
@@ -985,3 +986,201 @@ def test_list_warns_exactly_at_server_limit_and_labour_drafts_count_toward_it(pa
     expect(page.locator(".draft-row")).to_have_count(99)
     expect(page.locator("#draft-list-message")).to_contain_text("Lista on rajattu palvelimen 100 luonnokseen")
     expect(page.locator("#draft-list-message")).to_contain_text("työaikaluonnokset lasketaan rajaan")
+
+
+def discard_receipts(app, draft_id):
+    with app[1]._connect() as connection:
+        return connection.execute("SELECT count(*) FROM draft_request_receipts WHERE draft_id=? AND operation='DISCARD'",
+                                  (draft_id,)).fetchone()[0]
+
+
+def termination(app, draft_id):
+    with app[1]._connect() as connection:
+        row = connection.execute("SELECT reason FROM draft_terminations WHERE draft_id=?", (draft_id,)).fetchone()
+    return row and row[0]
+
+
+def confirm_discard(tab, accept=True):
+    prompts = []
+
+    def answer(dialog):
+        prompts.append(dialog.message)
+        dialog.accept() if accept else dialog.dismiss()
+
+    tab.once("dialog", answer)
+    tab.locator("#draft-discard").click()
+    return prompts
+
+
+def lose_discard(tab, draft_id):
+    """Commit a real server discard but lose its response; return the sent envelopes."""
+    lost = []
+
+    def lose(route):
+        response = route.fetch()
+        assert response.ok
+        lost.append(route.request.post_data_json)
+        route.abort("failed")
+
+    pattern = f"**/api/drafts/{draft_id}/discard"
+    tab.route(pattern, lose)
+    return lost, lambda: tab.unroute(pattern, lose)
+
+
+def test_discard_requires_confirmation_ends_shared_draft_and_clears_editor(page, local_app):
+    start(page, local_app, "Hylättävä fiktiivinen luonnos", "TEST-DISCARD")
+    did = save(page)
+    open_saved(page, did)
+    expect(page.locator(f'[data-draft-id="{did}"]')).to_have_count(1)
+    form(page, "customer_description").fill("Tallentamaton lisäys")
+    writes = []
+    page.on("request", lambda r: writes.append(r.url) if r.method == "POST" and "/discard" in r.url else None)
+    prompts = confirm_discard(page, accept=False)
+    assert "korjaamon yhteinen luonnos" in prompts[0] and "tallentamattomat muutokset" in prompts[0]
+    expect(form(page, "customer_description")).to_have_value("Tallentamaton lisäys")
+    assert writes == [] and stored(local_app, did) is not None
+    with page.expect_response(lambda r: r.request.method == "POST" and "/discard" in r.url) as response:
+        confirm_discard(page)
+    assert response.value.ok and response.value.json()["state"] == "DISCARDED"
+    expect(page.locator("#draft-message")).to_contain_text("Luonnos hylätty.")
+    expect(form(page, "customer_description")).to_have_value("")
+    expect(page.locator("#draft-discard")).to_be_hidden()
+    expect(page.locator(f'[data-draft-id="{did}"]')).to_have_count(0)
+    expect(page.locator("#draft-list-message")).to_contain_text("Luonnos hylätty")
+    assert stored(local_app, did) is None and termination(local_app, did) == "DISCARDED"
+    assert discard_receipts(local_app, did) == 1 and counts(local_app) == (1, 0)
+    assert page.evaluate("localStorage.length === 0 && sessionStorage.length === 0")
+
+
+@pytest.mark.parametrize("loss", ["lost-response", "timeout"])
+def test_unknown_discard_after_server_commit_retries_exact_envelope_once(page, local_app, loss):
+    if loss == "timeout":
+        page.clock.install()
+    start(page, local_app, "Epäselvästi hylätty", "TEST-UNKNOWN")
+    did = save(page)
+    request = {}
+    if loss == "lost-response":
+        lost, release = lose_discard(page, did)
+    else:
+        lost, held = [], []
+
+        def hold(route):
+            held.append(route.fetch())  # The server commits; the browser never gets the answer.
+            lost.append(route.request.post_data_json)
+            page.evaluate("window.discardHeld = true")
+
+        page.route(f"**/api/drafts/{did}/discard", hold)
+    confirm_discard(page)
+    if loss == "timeout":
+        page.wait_for_function("window.discardHeld === true")
+        page.clock.fast_forward(15000)
+    expect(page.locator("#draft-message")).to_contain_text("Hylkäyksen tulos jäi epäselväksi")
+    expect(page.locator("#draft-retry")).to_have_text("Uusi sama hylkäys")
+    expect(form(page, "customer_description")).to_be_disabled()
+    expect(page.locator("#draft-save")).to_be_disabled()
+    assert stored(local_app, did) is None and discard_receipts(local_app, did) == 1
+    if loss == "lost-response":
+        release()
+    else:
+        page.unroute_all(behavior="ignoreErrors")
+    with page.expect_response(lambda r: r.request.method == "POST" and "/discard" in r.url) as response:
+        page.locator("#draft-retry").click()
+    request["body"] = response.value.request.post_data_json
+    assert request["body"] == lost[0]
+    expect(page.locator("#draft-message")).to_contain_text("Luonnos hylätty.")
+    expect(page.locator("#draft-retry")).to_be_hidden()
+    assert discard_receipts(local_app, did) == 1 and termination(local_app, did) == "DISCARDED"
+
+
+def test_discard_after_colleague_save_conflicts_keeps_text_and_needs_server_version(page, local_app, other_staff):
+    other, _ = other_staff
+    start(page, local_app, "Alkuperäinen yhteinen", "TEST-DCONFLICT")
+    did = save(page)
+    other.goto(local_app[0], wait_until="networkidle")
+    open_saved(other, did)
+    form(other, "customer_description").fill("Kollegan uudempi versio")
+    save(other)
+    form(page, "customer_description").fill("Oma tallentamaton teksti")
+    confirm_discard(page)
+    expect(page.locator("#draft-message")).to_contain_text("Versioristiriita: luonnosta ei hylätty")
+    expect(form(page, "customer_description")).to_have_value("Oma tallentamaton teksti")
+    expect(page.locator("#draft-retry")).to_be_hidden()
+    assert stored(local_app, did)[0]["customer_description"] == "Kollegan uudempi versio"
+    assert discard_receipts(local_app, did) == 0
+    page.once("dialog", lambda dialog: dialog.accept())
+    page.locator("#draft-reload").click()
+    expect(form(page, "customer_description")).to_have_value("Kollegan uudempi versio")
+    confirm_discard(page)
+    expect(page.locator("#draft-message")).to_contain_text("Luonnos hylätty.")
+    assert stored(local_app, did) is None
+
+
+def test_colleague_editor_after_discard_cannot_recreate_and_keeps_text(page, local_app, other_staff):
+    other, _ = other_staff
+    start(page, local_app, "Kollegan auki pitämä", "TEST-DGONE")
+    did = save(page)
+    other.goto(local_app[0], wait_until="networkidle")
+    open_saved(other, did)
+    confirm_discard(page)
+    expect(page.locator("#draft-message")).to_contain_text("Luonnos hylätty.")
+    form(other, "customer_description").fill("Kollegan myöhäinen teksti")
+    other.locator("#draft-save").click()
+    # An ended draft may surface as unavailable or as a conflict; both keep the text and write nothing.
+    expect(other.locator("#draft-message")).to_contain_text(re.compile("ei ole saatavilla|Versioristiriita"))
+    expect(form(other, "customer_description")).to_have_value("Kollegan myöhäinen teksti")
+    expect(other.locator("#draft-save")).to_be_disabled()
+    assert stored(local_app, did) is None and counts(local_app) == (1, 0)
+
+
+@pytest.mark.parametrize("identity", ["same-user", "other-staff"])
+def test_unknown_discard_survives_same_user_relogin_but_not_identity_change(page, local_app, other_staff, identity):
+    _, staff = other_staff
+    user = user_for(local_app)
+    start(page, local_app, "Uudelleenkirjautumisen yli", "TEST-DRELOGIN")
+    did = save(page)
+    lost, release = lose_discard(page, did)
+    confirm_discard(page)
+    expect(page.locator("#draft-message")).to_contain_text("Hylkäyksen tulos jäi epäselväksi")
+    release()
+    writes = []
+    page.on("request", lambda r: writes.append(r.post_data_json) if r.method == "POST" and "/discard" in r.url else None)
+    if identity == "same-user":
+        relogin_same_user(page, local_app, user, timedelta(seconds=60))
+        expect(page.locator("#draft-retry")).to_have_text("Uusi sama hylkäys")
+        page.locator("#draft-retry").click()
+        expect(page.locator("#draft-message")).to_contain_text("Luonnos hylätty.")
+        assert writes == lost
+    else:
+        page.context.add_cookies([{"name": SessionCookiePolicy().name, "value": staff.token.get_secret_value(),
+            "url": local_app[0], "secure": True, "httpOnly": True, "sameSite": "Strict"}])
+        page.evaluate("CarbitAuth.lock()")
+        page.locator("#auth-check").click()
+        expect(page.locator("#business-shell")).to_be_visible()
+        expect(page.locator("#draft-retry")).to_be_hidden()
+        expect(page.locator("#draft-discard")).to_be_hidden()
+        assert form(page, "customer_description").input_value() == ""
+        assert writes == []
+    assert discard_receipts(local_app, did) == 1 and stored(local_app, did) is None
+
+
+def test_list_request_started_before_discard_cannot_restore_the_discarded_row(page, local_app):
+    start(page, local_app, "Hylätään listahaun aikana", "TEST-DRACE")
+    did = save(page)
+    open_saved(page, did)
+    close(page)
+    held, failures, listing = hold_lists(page)
+    page.locator("#draft-list-refresh").click()
+    page.wait_for_function("window.draftListsHeld === 1")
+    expect(page.locator("#draft-list-refresh")).to_be_disabled()
+    page.locator(f'[data-draft-id="{did}"]').click()  # The row from the earlier list stays clickable.
+    expect(page.locator("#draft-message")).to_contain_text("Palvelimen luonnos avattu")
+    confirm_discard(page)
+    expect(page.locator("#draft-message")).to_contain_text("Luonnos hylätty.")
+    expect(page.locator(f'[data-draft-id="{did}"]')).to_have_count(0)
+    expect(page.locator("#draft-list-refresh")).to_be_enabled()
+    held[0][0].fulfill(response=held[0][1])  # The pre-discard list, which still contains the row.
+    settle(page)
+    page.unroute(listing)
+    expect(page.locator(f'[data-draft-id="{did}"]')).to_have_count(0)
+    expect(page.locator("#draft-list-message")).to_contain_text("Luonnos hylätty")
+    assert failures == [] and stored(local_app, did) is None
