@@ -335,7 +335,7 @@ class AuthService:
         # A peer may upgrade the same hash. Reverify its replacement once, outside
         # the write lock. Never treat an arbitrary changed hash as verified, and
         # never cross an auth-version change (e.g. MFA reset) on a retry.
-        original = row
+        original, blocked = row, False
         for attempt in range(2):
             human = row is not None and row["kind"] == "HUMAN" and row["enabled"] == 1
             valid = self.passwords.verify(row["password_hash"] if human else None, password)
@@ -349,6 +349,11 @@ class AuthService:
                     retry = False
                 elif current["password_hash"] != row["password_hash"]:
                     retry = attempt == 0
+                elif not current["mfa_enabled"] and current["mfa_recovery_required"]:
+                    # After an MFA reset the password alone never opens enrollment:
+                    # only a bound recovery grant does (webapp.user_mfa_recovery).
+                    retry, blocked = False, True
+                    self._audit(connection, "ENROLLMENT_REQUIRES_RECOVERY_GRANT", now, subject=current["user_id"])
                 else:
                     if replacement is not None:
                         updated = connection.execute(
@@ -367,7 +372,7 @@ class AuthService:
                     )
                     self._audit(connection, "PASSWORD_VERIFIED", now, subject=current["user_id"])
                     return LoginChallenge(token=SecretStr(token), requires_enrollment=purpose == "ENROLL", expires_at=_utc(now + self.policy.challenge_seconds))
-                if not retry:
+                if not retry and not blocked:
                     self._audit(connection, "PASSWORD_REJECTED", now, subject=original["user_id"] if original else None)
             if not retry:
                 raise AuthenticationError("authentication failed")
@@ -388,7 +393,7 @@ class AuthService:
         now = self._now()
         with self.repository.transaction() as connection:
             challenge, user = self._challenge(connection, challenge_token, "ENROLL", now)
-            if challenge is None or user["mfa_enabled"]:
+            if challenge is None or user["mfa_enabled"] or user["mfa_recovery_required"]:
                 raise AuthenticationError("authentication failed")
             existing = connection.execute("SELECT * FROM auth_enrollments WHERE user_id=?", (user["user_id"],)).fetchone()
             if existing and existing["challenge_hash"] == challenge["token_hash"] and existing["expires_at"] > now:
@@ -418,7 +423,7 @@ class AuthService:
             retry_after = self._retry_after(connection, "MFA", account, client, now) if not allowed else None
             pending = connection.execute("SELECT * FROM auth_enrollments WHERE challenge_hash=?", (self._opaque_digest(challenge_token),)).fetchone()
             step = None
-            if allowed and user and not user["mfa_enabled"] and pending and pending["auth_version"] == user["auth_version"] and pending["expires_at"] > now:
+            if allowed and user and not user["mfa_enabled"] and not user["mfa_recovery_required"] and pending and pending["auth_version"] == user["auth_version"] and pending["expires_at"] > now:
                 step = matching_totp_step(self.cipher.decrypt(user["user_id"], pending["totp_ciphertext"]), code, now, None)
             if step is None:
                 if allowed:
@@ -538,12 +543,33 @@ class AuthService:
                 self._audit(connection, "MFA_RESET_REJECTED", self._now(), actor=actor[0] if actor else None, subject=target[0] if target else None)
             raise
 
+    def _require_recent_admin(self, connection, admin_session_token: str, now: int):
+        """A server-validated IT_ADMIN session verified with TOTP (not a recovery code) within the policy window."""
+        session, admin = self._session(connection, admin_session_token, now)
+        if admin["role"] != UserRole.IT_ADMIN.value or session["factor"] != "TOTP" or not 0 <= now - session["mfa_verified_at"] < self.policy.admin_mfa_fresh_seconds:
+            raise PermissionDeniedError("a recent administrator TOTP session is required")
+        return session, admin
+
+    def _invalidate_mfa(self, connection, target, now: int) -> None:
+        """Remove the factor, codes, sessions, challenges and pending enrollment of ``target``.
+
+        Password and role stay. ``mfa_recovery_required`` makes a later enrollment
+        depend on a bound recovery grant instead of the password alone.
+        """
+        changed = connection.execute(
+            "UPDATE auth_users SET mfa_enabled=0,totp_ciphertext=NULL,last_totp_step=NULL,mfa_recovery_required=1,"
+            "auth_version=auth_version+1 WHERE user_id=? AND auth_version=?", (target["user_id"], target["auth_version"]))
+        if changed.rowcount != 1:
+            raise AuthVersionConflictError("authentication state has changed")
+        connection.execute("UPDATE auth_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now, target["user_id"]))
+        connection.execute("UPDATE auth_challenges SET consumed_at=? WHERE user_id=? AND consumed_at IS NULL", (now, target["user_id"]))
+        connection.execute("DELETE FROM auth_enrollments WHERE user_id=?", (target["user_id"],))
+        connection.execute("DELETE FROM auth_recovery_codes WHERE user_id=?", (target["user_id"],))
+
     def _reset_user_mfa(self, admin_session_token: str, request: MfaResetRequest) -> MfaResetResult:
         payload, now = request.model_dump_json(), self._now()
         with self.repository.transaction() as connection:
-            session, admin = self._session(connection, admin_session_token, now)
-            if admin["role"] != UserRole.IT_ADMIN.value or session["factor"] != "TOTP" or not 0 <= now - session["mfa_verified_at"] < self.policy.admin_mfa_fresh_seconds:
-                raise PermissionDeniedError("a recent administrator TOTP session is required")
+            session, admin = self._require_recent_admin(connection, admin_session_token, now)
             previous = connection.execute("SELECT * FROM auth_reset_requests WHERE actor_user_id=? AND request_id=?", (admin["user_id"], str(request.request_id))).fetchone()
             if previous:
                 if previous["request_json"] != payload:
@@ -554,11 +580,7 @@ class AuthService:
                 raise PermissionDeniedError("administrator/service recovery requires a separate procedure")
             if target["auth_version"] != request.expected_auth_version:
                 raise AuthVersionConflictError("authentication state has changed")
-            connection.execute("UPDATE auth_users SET mfa_enabled=0,totp_ciphertext=NULL,last_totp_step=NULL,auth_version=auth_version+1 WHERE user_id=?", (target["user_id"],))
-            connection.execute("UPDATE auth_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now, target["user_id"]))
-            connection.execute("UPDATE auth_challenges SET consumed_at=? WHERE user_id=? AND consumed_at IS NULL", (now, target["user_id"]))
-            connection.execute("DELETE FROM auth_enrollments WHERE user_id=?", (target["user_id"],))
-            connection.execute("DELETE FROM auth_recovery_codes WHERE user_id=?", (target["user_id"],))
+            self._invalidate_mfa(connection, target, now)
             event_id = self._audit(connection, "MFA_RESET", now, actor=admin["user_id"], subject=target["user_id"], details={"identity_verification_reference": request.identity_verification_reference, "reason": request.reason, "previous_auth_version": target["auth_version"]})
             notification_id = str(uuid4())
             connection.execute("INSERT INTO auth_notification_outbox(notification_id,user_id,event_id,message_type,created_at) VALUES (?,?,?,?,?)", (notification_id, target["user_id"], event_id, "MFA_RESET", now))
