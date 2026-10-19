@@ -91,3 +91,25 @@ joten tämä asiakirja tiivistää niiden olennaisen sisällön.
 | 17.10.2026 | Hyväksytty jatkoharjoittelun katselmointi (reviewer) | `C:\Users\eliss\AppData\Local\Temp\carbit-provisionointi-jatko-review-20261017-codex\katselmointi-fi.md` |
 | 17.10.2026 | Jatkoharjoittelun raportti, skripti ja todisteet | `C:\Users\eliss\AppData\Local\Temp\carbit-provisionointi-jatko-20261017-b5ffe290d4d841c7b523e6013a1ebad3\` (`jatkoharjoitteluraportti-fi.md`, `skripti\jatkoharjoittelu.py`, `todisteet\jatkoharjoittelu-tulokset.json`) |
 | 17.10.2026 | Tilakirjauksen esteraportti, jossa valmis E1-kirjaus | `C:\Users\eliss\AppData\Local\Temp\carbit-e1-tilakirjaus-20261017-ac4e3d7860ff4b0cb8f57fabe6a09d7c\muutosraportti-fi.md` |
+
+## Liiketoimintakäyttäjän MFA-palautus (OWNER/SERVICE_MANAGER)
+
+**Tila: TOTEUTETTU JA TESTATTU, 17.10.2026. Palvelukerros ja auth-skeema
+katselmoitu ja commitoitu 19.10.2026 (`c29b8c2`). Konsolia ei ole katselmoitu,
+ketjua ei ole harjoiteltu oikealla konsolilla eikä hyväksytty käyttöön.**
+
+- **Toteutus:** paikallinen palautusketju, jossa on kolme vaihetta:
+  1. IT_ADMINin tuore TOTP-valtuutus
+  2. resetointi ja kertakäyttöinen palautusvaltuutus
+  3. käyttäjän oma salasana ja uusi TOTP.
+
+  Lisäksi auth-skeema päivitettiin versioon 4. Kuvaus on
+  [MFA-hätäpalautuksen ohjeessa](mfa-emergency-recovery.md#liiketoimintakäyttäjän-mfa-palautus).
+- **Testit:** testit tehtiin synteettisillä tileillä eristetyissä kannoissa.
+  Tulokset ovat toteutusraportissa. Testien läpäisy ei ole katselmointi.
+  Palvelukerroksen katselmoinnissa korjattiin P2-virhe: IT_ADMIN-tilin
+  offline-palautuksen viimeistely ei nollannut version 4 asettamaa
+  palautuslippua, jolloin tili jäi suljetuksi.
+- **Avoimina säilyvät:** konsolin katselmointi, D3, oikean konsolin palautusharjoitus ja
+  ilmoitusten toimitus. Tämä kohta ei laajenna E1:n sulkemista eikä anna
+  pilotti- tai tuotantohyväksyntää.
