@@ -20,6 +20,9 @@ from webapp.auth_service import (
     AuthIdempotencyConflictError, AuthPolicy, AuthService, AuthenticationError,
     AuthVersionConflictError, PermissionDeniedError, RateLimitError, TrustedClientContext,
 )
+from webapp.user_mfa_recovery import (
+    begin_user_recovery_enrollment, complete_user_mfa_recovery, start_user_mfa_recovery,
+)
 from http_auth_support import create_test_app as create_app
 
 
@@ -489,11 +492,13 @@ def test_admin_reset_revokes_all_state_queues_notice_and_requires_reenrollment(s
     assert rows(repository, "auth_notification_outbox")[0]["user_id"] == str(user.user_id)
     assert rows(repository, "auth_notification_outbox")[0]["delivered_at"] is None
     assert not service.require_session(admin.session.token.get_secret_value()).can_approve_labour
+    # The password alone no longer opens enrollment; a bound recovery grant is required
+    # (webapp.user_mfa_recovery, covered in tests/test_webapp_user_mfa_recovery.py).
+    assert target_row["mfa_recovery_required"] == 1
     clock.advance(300)
-    new_secret, new_grant = enroll(service, clock, user)
-    assert new_secret != secret
-    assert new_grant.session.user.auth_version == 2
-    assert service.require_session(new_grant.session.token.get_secret_value()).can_approve_labour
+    with pytest.raises(AuthenticationError):
+        service.begin_login(user.username, PASSWORD, client=client(str(user.user_id)))
+    assert not [row for row in rows(repository, "auth_challenges") if row["consumed_at"] is None]
 
 
 @pytest.mark.parametrize("identity", ["owner", "manager", "fake", "admin_self", "service", "stale_admin", "revoked_admin"])
@@ -536,15 +541,22 @@ def test_reset_idempotence_and_conflicting_payload(setup):
     assert len([row for row in rows(repository, "auth_events") if row["event_type"] == "MFA_RESET"]) == 1
 
 
-def test_reset_retry_after_new_enrollment_is_historical_and_does_not_revoke_it(setup):
+def test_reset_retry_after_recovery_enrollment_is_historical_and_does_not_revoke_it(setup):
     service, repository, clock, user, _, _, admin = prepared_reset(setup)
     request, token = reset_request(user), admin.session.token.get_secret_value()
     first = service.reset_user_mfa(token, request)
     clock.advance(30)
-    _, new = enroll(service, clock, user)
+    state = start_user_mfa_recovery(service, token, {
+        "target_user_id": str(user.user_id), "expected_auth_version": first.auth_version, "request_id": str(uuid4()),
+        "identity_verification_reference": "fictional-case-124", "verified_at": clock.value, "reason": "Fictional"})
+    grant = state.grant_token.get_secret_value()
+    secret = begin_user_recovery_enrollment(service, grant, PASSWORD, client=client()).secret.get_secret_value()
+    complete_user_mfa_recovery(service, grant, pyotp.TOTP(secret).at(clock.value), client=client())
+    clock.advance(30)
+    new = login(service, clock, user, secret)
     assert service.reset_user_mfa(token, request) == first
-    assert service.require_session(new.session.token.get_secret_value()).mfa_enabled
-    assert len(rows(repository, "auth_notification_outbox")) == 1
+    assert service.require_session(new.token.get_secret_value()).mfa_enabled
+    assert len(rows(repository, "auth_notification_outbox")) == 2  # reset and recovery start; the replay adds none
 
 
 @pytest.mark.parametrize("old_parameters", [False, True])
