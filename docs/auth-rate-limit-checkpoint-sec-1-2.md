@@ -176,6 +176,12 @@ nolla uutta P0–P2-löydöstä. T1, T2, T7 ja S6 on suljettu. Auditoinnin jälj
 jättämät P3-löydökset ovat U1, U2 ja U3; U3 ratkaistaan tällä dokumentaation
 päivityksellä, joten avoimiksi jäävät U1 ja U2.
 
+U1:n ja U2:n sisältö on kirjattu alla olevaan varaustaulukkoon 20.10.2026.
+Lähde on auditointiraportti "SEC-1.2: riippumaton tietoturvakatselmointi"
+(13.10.2026, kohta 2, Löydökset). Raportti on tallessa käyttäjän ChatGPT-projektin
+kirjastossa tiedostona `Liitetty teksti(20261013-130607).txt`. Lähteen löytyminen ei
+tarkoita, että löydökset olisi korjattu.
+
 Testitulokset ja auditoinnin PASS eivät merkitse tuotantohyväksyntää:
 tuotantovalmiutta ei ole hyväksytty, ja käyttöönoton esteet ovat edelleen voimassa.
 
@@ -183,6 +189,8 @@ tuotantovalmiutta ei ole hyväksytty, ja käyttöönoton esteet ovat edelleen vo
 
 | Tunnus | Nykyinen raja ja erillisen päätöksen kohde |
 | --- | --- |
+| U1 | Saman istunnon rinnakkaiset logoutit voivat läpäistä validoinnin ennen istunnon perumista. Silloin jokainen niistä varaa paikan globaalista logout-kiintiöstä, vaikka istunto perutaan vain kerran: testissä syntyi 2 varausta ja 1 peruminen. Väärinkäyttö vaatii voimassa olevan istunnon ja CSRF-todisteen, ja ikkuna rajoittuu tarkistuksen ja perumisen väliin. Auditointi arvioi löydöksen P3:ksi ja hyväksyttäväksi jäännösriskiksi SEC-1.2:n rajauksessa. Mahdollinen korjaus on varata globaali paikka samassa transaktiossa kuin peruminen. Korjausta ei ole toteutettu. |
+| U2 | Saman NAT-osoitteen takana toinen laite voi kuluttaa yhteisen asiakaskohtaisen logout-kiintiön (120/60 s), koska varaus tehdään ennen validointia. Tämä on tarkoituksellinen valinta, ja auditointi arvioi sen P3:ksi. Se käsitellään SEC-2:n NAT- ja ingress-päätöksessä. Muutosta ei ole toteutettu. |
 | T3 | Transport-hylkäyksen auditointinäytteen haku käyttää yhä SQLite-transaktiovarausta; prevalidoinnin hajautettu kuorma ja audit contention jäävät operatiiviseksi riskiksi. Ei uutta välimuistia, auditointipalvelua tai transaktiouudistusta. |
 | T4 | Auth tarkistaa Sec-Fetch-Site-arvon, jos mukana. Puuttuva Fetch Metadata sallitaan edelleen nykyisille API-asiakkaille. Pakollista otsaketta tai uusia business-reittien metadataehtoja ei toteutettu. |
 | T5 | Näytteistys ei ole täydellinen tapahtumalaskuri. Uusi privacy-raja yhdistää saman phase/scope_kind-luokan estot; HTTP-näytteistys säilyy operation/status-kohtaisena. Kategorioiden törmäykset ja 4096 tunnisteen hakurajan ylitys voivat muuttaa edustavuutta. Ei uutta säilytys- tai aggregointimallia. |
