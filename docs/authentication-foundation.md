@@ -113,9 +113,10 @@ myönnä istuntoa: toinen tekijä tarvitaan edelleen.
 
 1. `begin_login()` tarkistaa salasanan ja palauttaa enintään viisi minuuttia
    voimassa olevan haasteen. Tämä haaste **ei ole istunto**.
-2. Ensimmäisessä rekisteröinnissä tai ylläpitäjän MFA-palautuksen jälkeen
-   `begin_mfa_enrollment()` palauttaa salaisuuden/provisionointilinkin vain
-   käyttäjän oman salasanan tarkistuksen jälkeen. Tilin tunnistussalaisuuksia
+2. Ensimmäisessä rekisteröinnissä `begin_mfa_enrollment()` palauttaa
+   salaisuuden/provisionointilinkin vain käyttäjän oman salasanan tarkistuksen
+   jälkeen. Ylläpitäjän MFA-resetin jälkeen rekisteröinti vaatii lisäksi
+   palautusvaltuutuksen (`webapp/user_mfa_recovery.py`). Tilin tunnistussalaisuuksia
    ei palauteta ylläpitäjän palautusrajapinnasta.
 3. `confirm_mfa_enrollment()` vaatii toimivan TOTP-koodin, aktivoi MFA:n ja
    palauttaa kymmenen kertakäyttöistä palautuskoodia sekä ensimmäisen istunnon.
@@ -183,10 +184,12 @@ yritysrajoitus ei yksin torju suurta DDoS-hyökkäystä.
 
 ## Ylläpitäjän MFA-palautus
 
-**Nykyinen sisäinen reset ei toteuta suunniteltua turvallista hätäpalautusta.** Tekstiviite ei
-todista henkilöllisyyttä teknisesti. Resetin jälkeen voimassa oleva salasana
-riittää uuden MFA-rekisteröinnin aloittamiseen; rakenteiseen henkilöllisyyden
-tarkistukseen sidottua kertakäyttöistä rekisteröintivaltuutusta ei vielä ole.
+**Nykyinen sisäinen reset ei toteuta suunniteltua turvallista hätäpalautusta.**
+Tekstiviite ei todista henkilöllisyyttä teknisesti. Resetin jälkeen salasana ei
+enää yksin riitä uuden MFA-rekisteröinnin aloittamiseen. Tila
+`mfa_recovery_required` vaatii kertakäyttöisen palautusvaltuutuksen
+([liiketoimintakäyttäjän palautus](mfa-emergency-recovery.md#liiketoimintakäyttäjän-mfa-palautus),
+palvelukerros katselmoitu ja commitoitu 19.10.2026, `c29b8c2`; konsolia ei ole katselmoitu).
 Tätä toimintoa ei julkaista HTTP-rajapintana eikä oteta tuotantoon tässä muodossa.
 [Yhden ylläpitäjän palautussuunnitelma](mfa-emergency-recovery.md) erottaa
 hyväksytyn oikeusmallin, nykyiset suojat ja vielä suunnitellut mekanismit.

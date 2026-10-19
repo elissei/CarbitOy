@@ -145,7 +145,7 @@ def start_user_mfa_recovery(service: AuthService, admin_session_token: str, requ
         request.model_dump() if isinstance(request, UserMfaRecoveryRequest) else request)
     try:
         return _start(service, admin_session_token, request)
-    except (AuthenticationError, AuthVersionConflictError, AuthIdempotencyConflictError):
+    except ValueError:  # every recovery rejection, incl. a future identity check; not storage errors
         with service.repository.transaction() as connection:
             actor = connection.execute("SELECT user_id FROM auth_sessions WHERE token_hash=?",
                                        (service._opaque_digest(admin_session_token),)).fetchone()

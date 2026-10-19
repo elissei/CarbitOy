@@ -184,6 +184,21 @@ def start_admin_offline_recovery(service: AuthService, request: AdminRecoverySta
     """
     request = AdminRecoveryStartRequest.model_validate(
         request.model_dump() if isinstance(request, AdminRecoveryStartRequest) else request)
+    try:
+        return _start(service, request)
+    except ValueError:  # a service rejection after model validation; not storage errors
+        # The rolled-back start changed nothing; only the rejection is recorded. The
+        # offline path has no authenticated actor, so none is claimed.
+        with service.repository.transaction() as connection:
+            target = connection.execute("SELECT user_id FROM auth_users WHERE user_id=?",
+                                        (str(request.target_user_id),)).fetchone()
+            service._audit(connection, "ADMIN_OFFLINE_RECOVERY_REJECTED", service._now(),
+                           subject=target[0] if target else None,
+                           details={"request_id": str(request.request_id), "stage": "START"})
+        raise
+
+
+def _start(service, request) -> AdminRecoveryState:
     payload = request.model_dump_json()
     with service.repository.transaction() as connection:
         now = service._now()

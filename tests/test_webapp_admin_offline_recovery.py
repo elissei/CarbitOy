@@ -322,6 +322,55 @@ def test_wrong_target_or_stale_version_is_rejected_without_changes(world, target
     assert not rows(world["repository"], "SELECT * FROM auth_admin_recovery_requests")
 
 
+def _recovery_side_effects(world):
+    return {table: rows(world["repository"], f"SELECT * FROM {table} ORDER BY rowid") for table in (
+        "auth_users", "auth_sessions", "auth_recovery_codes", "auth_admin_recovery_requests",
+        "auth_admin_recovery_outbox", "auth_notification_outbox")}
+
+
+def _start_rejections(world):
+    return [(row["actor_user_id"], row["subject_user_id"], json.loads(row["details_json"])) for row in rows(
+        world["repository"], "SELECT * FROM auth_events WHERE event_type='ADMIN_OFFLINE_RECOVERY_REJECTED' "
+        "ORDER BY event_id")]
+
+
+@pytest.mark.parametrize("case", ["business-target", "unknown-target", "stale-version", "future-check",
+                                  "conflicting-replay", "open-request", "closed-account"])
+def test_start_rejection_is_audited_without_an_actor_or_recovery_side_effects(world, case):
+    service, admin = world["service"], world["admin"]
+    subject, error = str(admin.user_id), ValueError
+    if case == "business-target":
+        request, subject, error = start_request(world, user=world["owner"]), str(world["owner"].user_id), PermissionDeniedError
+    elif case == "unknown-target":
+        request, subject, error = start_request(world), None, PermissionDeniedError
+        request["target_user_id"] = str(uuid4())
+    elif case == "stale-version":
+        request, error = start_request(world, expected=user_row(world, admin)["auth_version"] + 1), AuthVersionConflictError
+    elif case == "future-check":
+        request = start_request(world, verified_at=world["clock"].value + timedelta(hours=1))
+    elif case in ("conflicting-replay", "open-request"):
+        first = start_request(world)
+        start_admin_offline_recovery(service, first)
+        request, error = (first | {"reason": "Different fictional reason"} if case == "conflicting-replay"
+                          else start_request(world)), AuthIdempotencyConflictError
+    else:
+        with world["repository"].transaction() as connection:
+            connection.execute("UPDATE auth_users SET enabled=0 WHERE user_id=?", (subject,))
+        request, error = start_request(world), PermissionDeniedError
+    before, earlier = _recovery_side_effects(world), _start_rejections(world)
+    with pytest.raises(error):
+        start_admin_offline_recovery(service, request)
+    assert _recovery_side_effects(world) == before
+    assert _start_rejections(world) == earlier + [(None, subject, {"request_id": request["request_id"], "stage": "START"})]
+
+
+def test_start_success_and_accepted_replay_record_no_rejection(world):
+    request = start_request(world)
+    start_admin_offline_recovery(world["service"], request)
+    assert start_admin_offline_recovery(world["service"], request).replayed
+    assert not _start_rejections(world)
+
+
 def test_existing_reset_still_rejects_it_admin_targets(world):
     service, clock = world["service"], world["clock"]
     other_admin = provision(service, UserRole.IT_ADMIN, "test.admin2")
