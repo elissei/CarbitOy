@@ -48,13 +48,17 @@ The password, MFA, session, and HTTP configuration belongs to [Employee Authenti
 | `ValidatedSession` | `user`, `session_id`, `absolute_expiry`, `idle_expiry` | A server-checked session view without the bearer token. |
 | `auth_store_identity` | `store_id` | Immutable namespace for identities in one auth database. |
 | `auth_users` | `password_hash`, `totp_ciphertext`, `last_totp_step` | Credential material and TOTP replay state in the auth store. |
+| `auth_users` | `mfa_recovery_required` | Persisted gate that requires a recovery grant after MFA reset; ordinary first enrollment has value `0`. This field is not in the `User` Pydantic model. |
 | `auth_challenges` | `purpose`, `auth_version`, `expires_at`, `consumed_at` | Versioned password-to-MFA or enrollment transition. |
 | `auth_sessions` | `token_hash`, `last_seen_at`, `revoked_at` | Session lookup, idle limit, and explicit revocation. |
 | `auth_events` | `actor_user_id`, `subject_user_id`, `details_json` | Authentication audit history. |
 | `auth_rate_limits` | `scope_hash`, `window_start`, `attempts` | Persistent authentication request budgets. |
 | `auth_recovery_codes` | `user_id`, `auth_version`, `consumed_at` | One-use recovery factor tied to an account version. |
-| `auth_notification_outbox` | `notification_id`, `event_id`, `delivered_at` | Pending notification about an MFA reset. |
+| `auth_notification_outbox` | `notification_id`, `event_id`, `delivered_at` | Notification intent about an MFA reset; a row does not prove delivery. |
 | `auth_reset_requests` | `actor_user_id`, `request_id` | Idempotency record for server-side reset requests. |
+| `auth_admin_recovery_requests` | `target_user_id`, `recovery_auth_version`, `grant_hash`, `status`, `pending_totp_ciphertext` | Version-bound IT-admin recovery grant and pending factor; final states retain history. |
+| `auth_admin_recovery_outbox` | `request_id`, `event_id`, `delivered_at` | Administrator recovery notification intent, not delivery. |
+| `auth_user_recovery_grants` | `actor_user_id`, `target_user_id`, `purpose`, `recovery_auth_version`, `grant_hash`, `status` | Version- and purpose-bound business-user recovery authorization; the pending factor is stored until completion or closure. |
 | `repair_organizations` | `organization_id`, `enabled` | Business-side organization scope and availability. |
 | `workshops` | `workshop_id`, `organization_id`, `status` | Workshop belonging to an organization. |
 | `workshop_principals` | `auth_store_id`, `user_id` | Connects an auth-store user to the business store. |
@@ -69,7 +73,7 @@ The password, MFA, session, and HTTP configuration belongs to [Employee Authenti
 | `BusinessActor` | `user_id`, `display_name` | Captured employee attribution for a business event. |
 | `WorkshopAuthBinding` | `service`, `session_id` | Server-only link to the auth session for commit-time validation. |
 
-The authentication tables live in a separate SQLite file from inquiries and workshop tables. `AuthRepository.initialize()` creates auth schema and the store identity; business initialization adds workshop tables but creates no organization, membership, or inquiry assignment. The store ID keeps same-looking user IDs from different auth databases separate.
+The authentication tables live in a separate SQLite file from inquiries and workshop tables. `AuthRepository.initialize()` applies any missing auth schema versions 1–4 and creates the store identity; versions 3 and 4 add the recovery structures, and version 4 marks human accounts with a prior MFA reset and no active factor as recovery-required. Business initialization adds workshop tables but creates no organization, membership, or inquiry assignment. The store ID keeps same-looking user IDs from different auth databases separate. See [Employee Authentication](../features/employee-authentication.md) for recovery procedures.
 
 `UserRole` has `OWNER`, `SERVICE_MANAGER`, `IT_ADMIN`, and `OPENCLAW`. `IdentityKind` distinguishes `HUMAN` from `SERVICE`; the `OPENCLAW` role is service-only and cannot use human MFA. `User.can_approve_labour` describes eligibility only: it is neither session verification nor workshop authorization.
 

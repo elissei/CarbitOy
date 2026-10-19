@@ -14,6 +14,8 @@ sources:
   - presentation/*.py
   - services/*.py
   - webapp/*.py
+  - webapp/admin_offline_recovery.py
+  - webapp/user_mfa_recovery.py
   - webapp/static/labour-review-demo.html
   - webapp/static/labour-review-demo.js
   - requirements-web.txt
@@ -43,7 +45,6 @@ webapp/ -----------------------> services/, domain/models/
   +--> webapp/auth_repository.py -------> auth SQLite
   +--> webapp/database.py --------------> business SQLite
 ```
-
 These arrows summarize imports and storage access, not a single call chain. `app/` uses interpreter interfaces supplied by callers; `presentation/` can use a supplied AI presenter. The web layer uses its own repositories and authorization boundary. Business operations verify workshop scope against the business store while retaining the auth session binding from the separate auth store; see [Workshop Identity](./concepts/workshop-identity.md).
 
 ## Modules
@@ -86,7 +87,7 @@ Services calculate labour cost and inclusive VAT splits, assemble a single-work 
 
 ### Web application — `webapp/`
 
-`main.py` creates the FastAPI app, registers auth and draft routes, serves the browser, and exposes workshop inquiry routes. `http_access.py` checks the explicit route inventory and protects business requests; the auth modules manage personal password, MFA, session, and CSRF handling. [Employee Authentication](./features/employee-authentication.md) owns that HTTP flow.
+`main.py` creates the FastAPI app, registers auth and draft routes, serves the browser, and exposes workshop inquiry routes. `http_access.py` checks the explicit route inventory and protects business requests. The auth modules manage passwords, MFA, sessions, and CSRF; `admin_offline_recovery.py` and `user_mfa_recovery.py` provide trusted Python recovery procedures. [Employee Authentication](./features/employee-authentication.md) owns the login and recovery flows.
 
 The workshop modules establish organizations, workshops, memberships, roles, and active context. Business operations receive a server-resolved employee and workshop context, while SQLite operations recheck authorization and inquiry scope. [Workshop Access](./features/workshop-access.md) owns establishment and access behavior; [Local Work Queue](./features/local-work-queue.md) owns inquiry creation, list, detail, and manual labour entry.
 
@@ -96,9 +97,9 @@ The stored labour modules keep plan revisions, original times, review decisions,
 
 ## Storage and Entry Points
 
-`webapp.main:app` is the ASGI entry point; `create_app()` accepts a business database path and optional server settings. Its business database defaults from `CARBIT_DATABASE` or the repository default. Startup initializes an auth SQLite database and a distinct business SQLite database. The business repository applies inquiry, labour, workshop, and draft migrations even when draft HTTP access is disabled.
+`webapp.main:app` is the ASGI entry point; `create_app()` accepts a business database path and optional server settings. Its business database defaults from `CARBIT_DATABASE` or the repository default. Startup initializes separate auth and business SQLite databases: `AuthRepository.initialize()` applies any missing auth schema versions 1–4 (versions 3 and 4 add the recovery structures), while the business repository applies inquiry, labour, workshop, and draft migrations even when draft HTTP access is disabled. The auth recovery outbox rows record notification intent, not delivery; [Workshop Identity](./concepts/workshop-identity.md) owns the stored records.
 
-Startup requires explicit auth configuration, including an auth database path, exact hosts and external origins, TOTP encryption keys, and CSRF signing keys. It rejects an auth database path that resolves to the business database. The route gate requires the configured HTTPS origin and guards session and write requests; [Employee Authentication](./features/employee-authentication.md) has the operational details.
+Startup requires explicit auth configuration, including an auth database path, exact hosts and external origins, TOTP encryption keys, and CSRF signing keys. It rejects an auth database path that resolves to the business database. The route gate requires the configured HTTPS origin and guards session and write requests. Offline recovery enters through trusted Python functions outside the HTTP route inventory; [Employee Authentication](./features/employee-authentication.md) has the operational details.
 
 Draft HTTP access needs explicit opt-in and signing keys. Without opt-in, the handlers remain registered but cannot serve the draft service. [Inquiry Drafts](./features/inquiry-drafts.md) has the setting and route contract. Stored labour approval and approved pricing are internal service entry points; the queue's `/api/works/{work_id}/labour` route still records one manual labour snapshot. [Approved Labour](./features/approved-labour.md) and [Local Work Queue](./features/local-work-queue.md) describe those separate operations.
 

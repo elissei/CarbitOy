@@ -7,6 +7,8 @@ sources:
   - webapp/auth_csrf.py
   - webapp/auth_repository.py
   - webapp/auth_service.py
+  - webapp/admin_offline_recovery.py
+  - webapp/user_mfa_recovery.py
   - webapp/auth_settings.py
   - webapp/http_auth.py
   - webapp/http_access.py
@@ -22,7 +24,7 @@ last_verified: 2026-10-19
 
 ## Overview
 
-An enrolled employee signs in with a password and a second factor, then uses a secure session cookie to reach Carbit's protected pages and APIs. The browser can log out; account provisioning, MFA enrollment, and reset are server-side procedures without HTTP routes.
+An enrolled employee signs in with a password and a second factor, then uses a secure session cookie to reach Carbit's protected pages and APIs. The browser can log out; account provisioning, MFA enrollment, reset, and offline recovery are trusted Python procedures without HTTP routes.
 
 ## Key Concepts
 
@@ -41,6 +43,15 @@ Before working with this feature, understand these concepts:
 4. The browser calls `GET /api/auth/session` for current user and expiry information. The protected work page then loads only through the route gate and a usable workshop membership.
 5. On logout, `POST /api/auth/logout` verifies a session CSRF proof, revokes the server session, clears authentication cookies, and returns 204.
 
+Offline recovery is separate from that browser flow:
+
+| Procedure | Authorization and completion |
+|-----------|------------------------------|
+| `OWNER` or `SERVICE_MANAGER` MFA recovery | A recently TOTP-verified IT admin records an in-person identity check, reason, request ID, and expected account version. `start_user_mfa_recovery()` invalidates the old factor, sessions, challenges, codes, and pending enrollment, then returns a 15-minute grant. The user presents that grant and their own password to `begin_user_recovery_enrollment()`, then proves the new TOTP to `complete_user_mfa_recovery()`. |
+| IT-admin own-MFA recovery | With the application service stopped (an operator precondition the function does not verify), `start_admin_offline_recovery()` records either a separate external authorizer and in-person check or explicitly selected local self-recovery confirmations. It closes the IT-admin account, invalidates old authentication state, and returns a 15-minute grant. The admin uses the grant and own password with `begin_admin_recovery_enrollment()`, then the new TOTP with `complete_admin_offline_recovery()`. |
+
+Both completion calls issue fresh recovery codes once and no login session; the person signs in normally afterward. The in-person check and local confirmations are recorded statements, not checks the program can perform. Notification outbox rows record intent only, not delivery.
+
 ### Validation Rules
 
 - Login and MFA requests require exact JSON object shapes. Authentication POST bodies are capped at 4096 bytes; duplicate JSON keys, malformed JSON, and mismatched content length are rejected.
@@ -54,12 +65,17 @@ Before working with this feature, understand these concepts:
 - CSRF proofs bind to the configured origin and current preauth, MFA, or validated session state. The preauth and MFA cookies are replaced or cleared as the flow advances.
 - The gate accepts only registered route and method pairs; app startup fails when the inventory differs. `/login`, `/login.js`, and `/login.css` are the public browser files, still subject to transport checks.
 - The app disables the generated OpenAPI, Swagger, and ReDoc routes, so they are not extra public authentication surfaces.
+- Recovery requests require the current account version and a unique request ID; the business-user path requires an enabled target in an allowed role. Grants are single-use, account-version-bound, and expire after 15 minutes. Password and TOTP attempts spend persistent rate-limit budgets.
 
 ### Edge Cases
 
 | Scenario | Behavior |
 |----------|----------|
-| Password valid but MFA is not enrolled | Internal service creates an enrollment challenge; the HTTP login adapter returns generic authentication failure and issues no session. |
+| Password valid but MFA is not enrolled | Ordinary first enrollment can receive an internal enrollment challenge; after reset, `mfa_recovery_required` blocks password-only enrollment. HTTP login returns generic failure and no session in either case. |
+| Business-user recovery grant expires or is superseded | The grant cannot complete; the account remains recovery-required until a newly authorized recovery completes. |
+| IT-admin recovery expires or is cancelled | The grant cannot complete; the account remains disabled until a new offline recovery completes. |
+| Recovery start or completion is replayed | Start returns current state without the grant token; completed-grant replay returns `ALREADY_COMPLETED` without codes or a session. A changed request under the same ID conflicts. |
+| Recovery enrollment is repeated | It replaces the pending TOTP secret; the earlier secret cannot complete recovery. |
 | Unknown or disabled account, wrong password, reused MFA step, invalid recovery code | No session; authentication failure does not identify which factor or account failed. |
 | Session, preauth, and MFA cookies appear in an invalid combination | HTTP auth state conflict or invalid context; no fallback to a weaker state. |
 | Session was revoked or expired before CSRF bootstrap | The CSRF endpoint can clear the stale session cookie and return a new preauthentication proof. Storage failures return 503 instead. |
@@ -82,6 +98,8 @@ Before working with this feature, understand these concepts:
 | `SessionGrant` | `token`, `user`, `session` | Server result after MFA verification. |
 | `AuthPolicy` | `challenge_seconds`, `session_seconds`, `idle_seconds`, rate-limit fields | Configurable authentication lifetimes and budgets. |
 | `AuthSettings` | `database_path`, `allowed_hosts`, `external_origins`, TOTP and CSRF keys | Required HTTP authentication configuration. |
+| `UserMfaRecoveryRequest`, `UserRecoveryState`, `UserRecoveryCompletion` | `target_user_id`, `expected_auth_version`, `request_id`, `status`, `grant_token`, `recovery_codes` | Offline business-user request, grant state, and one-time completion result. |
+| `AdminRecoveryStartRequest`, `AdminRecoveryState`, `AdminRecoveryCompletion` | `target_user_id`, `expected_auth_version`, `request_id`, `status`, `grant_token`, `recovery_codes` | Offline IT-admin request, grant state, and one-time completion result. |
 
 The `ValidatedSession` interface, persistent auth tables, roles, and identity fields are owned by [Workshop Identity](../concepts/workshop-identity.md).
 
@@ -117,7 +135,14 @@ The auth service records rate-limit counters and audit events in the auth databa
 | `AuthService` | `provision_identity()` | Trusted offline identity creation; never a registration route. |
 | `AuthService` | `begin_mfa_enrollment()` | Starts server-side TOTP enrollment for an enrollment challenge. |
 | `AuthService` | `confirm_mfa_enrollment()` | Confirms TOTP enrollment and returns one-time recovery codes. |
-| `AuthService` | `reset_user_mfa()` | Audited, idempotent reset after a recent IT-admin TOTP session and supplied verification evidence. |
+| `AuthService` | `reset_user_mfa()` | Audited, idempotent reset of an owner or service manager after recent IT-admin TOTP verification; leaves enrollment grant-required and excludes IT-admin targets. |
+| `user_mfa_recovery` | `start_user_mfa_recovery()` | Authorizes and starts a business user's grant-bound recovery. |
+| `user_mfa_recovery` | `begin_user_recovery_enrollment()` | Checks grant and user's password; returns a pending TOTP secret. |
+| `user_mfa_recovery` | `complete_user_mfa_recovery()` | Verifies new TOTP, consumes the grant, and returns one-time codes. |
+| `admin_offline_recovery` | `start_admin_offline_recovery()` | Starts stopped-host IT-admin own recovery and disables the target account. |
+| `admin_offline_recovery` | `begin_admin_recovery_enrollment()` | Checks grant and admin password; returns a pending TOTP secret. |
+| `admin_offline_recovery` | `complete_admin_offline_recovery()` | Verifies new TOTP, consumes the grant, and reopens the account. |
+| `admin_offline_recovery` | `cancel_admin_offline_recovery()` | Closes an open grant while leaving the account disabled. |
 | `http_auth` | `register_auth_routes()` | Registers the five concrete auth endpoints. |
 | `http_access` | `validate_route_coverage()` | Ensures every registered route has one reviewed access policy. |
 
@@ -144,15 +169,11 @@ Transport and CSRF failures return 400 or 403, state conflicts 409, malformed bo
 
 `/api/auth/csrf` uses a custom bootstrap header so ordinary navigation cannot create preauthentication context. Once a session exists, its proof is bound to the validated session token and deadlines; the browser refreshes that short-lived proof when needed.
 
-The login route exposes neither the internal enrollment secret nor recovery-code issuance. A user without enrolled MFA needs a trusted server-side enrollment procedure before this browser flow can complete.
+The login route exposes neither enrollment secrets nor recovery codes. The password step creates a challenge, not a session; the HTTP adapter exposes only the ordinary MFA path.
 
-The first password step does not itself create a session. Its challenge records whether the account needs enrollment or ordinary login, and the HTTP adapter deliberately exposes only the ordinary MFA path.
+The auth gateway audits HTTP endpoint results, while the service records password, MFA, session, reset, and recovery events in the authentication store.
 
-The auth gateway audits endpoint results after processing, while the service records password, MFA, session, and reset events. These records belong to the separate authentication store.
-
-The browser does not read the secure session cookie. It uses cookie-backed requests and receives only a public CSRF proof and a bounded user/session view from the API.
-
-Protected business reads and writes also require a usable workshop membership. The auth route itself checks credentials and session state; [Workshop Access](./workshop-access.md) owns the later scope decision.
+The browser uses the HttpOnly session cookie without reading it; it receives only a public CSRF proof and a bounded user/session view from the API. Protected business requests additionally need the membership described in [Workshop Access](./workshop-access.md).
 
 ## Integration Points
 
@@ -162,4 +183,4 @@ Protected business reads and writes also require a usable workshop membership. T
 
 ## Extension Guide
 
-Provisioning and recovery currently have service methods but no public transport. A future operator interface must add an explicit route policy, retain the existing server-side authorization checks, and never expose MFA secrets or recovery codes through the ordinary login flow. New protected routes must be added to `ROUTE_PERMISSIONS`, or startup will reject them.
+Provisioning and both recovery procedures have no HTTP transport. A future operator interface must add an explicit route policy, preserve server-side authorization, and keep MFA secrets and recovery codes out of ordinary login responses. New protected routes must be added to `ROUTE_PERMISSIONS`, or startup rejects them. A reset alone leaves the target grant-required; use the grant-bound recovery procedure for re-enrollment.
