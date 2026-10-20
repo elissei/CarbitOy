@@ -96,11 +96,30 @@ joten tämä asiakirja tiivistää niiden olennaisen sisällön.
 | 17.10.2026 | Jatkoharjoittelun raportti, skripti ja todisteet | `C:\Users\eliss\AppData\Local\Temp\carbit-provisionointi-jatko-20261017-b5ffe290d4d841c7b523e6013a1ebad3\` (`jatkoharjoitteluraportti-fi.md`, `skripti\jatkoharjoittelu.py`, `todisteet\jatkoharjoittelu-tulokset.json`) |
 | 17.10.2026 | Tilakirjauksen esteraportti, jossa valmis E1-kirjaus | `C:\Users\eliss\AppData\Local\Temp\carbit-e1-tilakirjaus-20261017-ac4e3d7860ff4b0cb8f57fabe6a09d7c\muutosraportti-fi.md` |
 
+## IT_ADMINin oma MFA-palautus (offline, `start-self`)
+
+**Tila: TOTEUTETTU, TESTATTU JA KATSELMOITU.** Palvelu on commitissa `c29b8c2`
+ja konsoli commitissa `ad035e0`. Lisäksi P3-auditointikorjaukset ovat commitissa
+`da03f7f`. Ensimmäinen synteettinen harjoitus oikealla konsolilla onnistui
+20.10.2026. Menettelyä ei ole hyväksytty käyttöön.
+
+- **Harjoitus:**
+  - Mukana olivat synteettinen tili, erillinen auth-kanta ja käyttäjän oma
+    PowerShell-ikkuna.
+  - Kaikki hyväksymiskriteerit täyttyivät toisella kierroksella:
+    `COMPLETED`, ei istuntoa ja tavallinen kirjautuminen uudella TOTP:llä.
+  - Ensimmäinen kierros jäi kesken käytettävyysongelmien vuoksi.
+  - Kuvaus: [MFA-hätäpalautuksen ohje](mfa-emergency-recovery.md#palautusharjoitus).
+- **Avoimina säilyvät:** D3, ilmoitusten toimitus, harjoituksessa havaitut
+  käytettävyyden parannukset (ei toteutettu) sekä kohdeympäristön palautus.
+  Tämä kohta ei anna pilotti- tai tuotantohyväksyntää.
+
 ## Liiketoimintakäyttäjän MFA-palautus (OWNER/SERVICE_MANAGER)
 
 **Tila: TOTEUTETTU JA TESTATTU, 17.10.2026. Palvelukerros ja auth-skeema
-katselmoitu ja commitoitu 19.10.2026 (`c29b8c2`). Konsolia ei ole katselmoitu,
-ketjua ei ole harjoiteltu oikealla konsolilla eikä hyväksytty käyttöön.**
+katselmoitu ja commitoitu 19.10.2026 (`c29b8c2`), konsoli 20.10.2026 (`ad035e0`),
+P3-jatkokorjaukset 20.10.2026 (`da03f7f`).
+Ketjua ei ole harjoiteltu oikealla konsolilla eikä hyväksytty käyttöön.**
 
 - **Toteutus:** paikallinen palautusketju, jossa on kolme vaihetta:
   1. IT_ADMINin tuore TOTP-valtuutus
@@ -114,6 +133,6 @@ ketjua ei ole harjoiteltu oikealla konsolilla eikä hyväksytty käyttöön.**
   Palvelukerroksen katselmoinnissa korjattiin P2-virhe: IT_ADMIN-tilin
   offline-palautuksen viimeistely ei nollannut version 4 asettamaa
   palautuslippua, jolloin tili jäi suljetuksi.
-- **Avoimina säilyvät:** konsolin katselmointi, D3, oikean konsolin palautusharjoitus ja
+- **Avoimina säilyvät:** D3, liiketoimintakäyttäjän palautusharjoitus oikealla konsolilla ja
   ilmoitusten toimitus. Tämä kohta ei laajenna E1:n sulkemista eikä anna
   pilotti- tai tuotantohyväksyntää.

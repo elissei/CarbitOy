@@ -189,7 +189,7 @@ Tekstiviite ei todista henkilöllisyyttä teknisesti. Resetin jälkeen salasana 
 enää yksin riitä uuden MFA-rekisteröinnin aloittamiseen. Tila
 `mfa_recovery_required` vaatii kertakäyttöisen palautusvaltuutuksen
 ([liiketoimintakäyttäjän palautus](mfa-emergency-recovery.md#liiketoimintakäyttäjän-mfa-palautus),
-palvelukerros katselmoitu ja commitoitu 19.10.2026, `c29b8c2`; konsolia ei ole katselmoitu).
+palvelukerros katselmoitu ja commitoitu 19.10.2026, `c29b8c2`; konsolit 20.10.2026, `ad035e0`).
 Tätä toimintoa ei julkaista HTTP-rajapintana eikä oteta tuotantoon tässä muodossa.
 [Yhden ylläpitäjän palautussuunnitelma](mfa-emergency-recovery.md) erottaa
 hyväksytyn oikeusmallin, nykyiset suojat ja vielä suunnitellut mekanismit.
