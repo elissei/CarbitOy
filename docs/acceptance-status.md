@@ -60,8 +60,12 @@ Nämä eivät kuulu E1:n sulkemiseen:
 - ihmisen salasanan syöttö, todentajasovellus, palautuskoodien luovutus ja
   palautuskoodilla kirjautuminen
 - SEC-1.2:n U1/U2-varaukset. Riippumaton auditointi jätti ne avoimiksi
-  P3-löydöksiksi ([SEC-1.2](auth-rate-limit-checkpoint-sec-1-2.md)), eikä niiden
-  sisältöä ole kuvattu luetuissa lähteissä.
+  P3-löydöksiksi. Niiden sisältö ja lähde on kirjattu 20.10.2026
+  [SEC-1.2:n varaustaulukkoon](auth-rate-limit-checkpoint-sec-1-2.md):
+  - U1: rinnakkaiset logoutit ja globaali kiintiö, hyväksytty jäännösriski
+  - U2: NAT-osoitteen jaettu asiakaskiintiö, käsitellään SEC-2:ssa.
+
+  Kumpaakaan ei ole korjattu.
 - MFA-hätäpalautuksen aiemmat varaukset ([MFA-hätäpalautus](mfa-emergency-recovery.md))
 
 ### Seuraavan selain- ja operaattorinäytön tunnetut edellytykset

@@ -700,3 +700,86 @@ def test_shared_staff_http_lifecycle_and_nonce_namespaces(http,kind):
     http.cookies.set(SESSION_COOKIE,creator.token.get_secret_value())
     assert http.post(path+'/discard',json=discard,headers=business_headers(http)).status_code==404
     assert authors(http.app.state.repository,first['draft_id'])==(str(creator.user.user_id),str(other.user.user_id))
+
+
+def _staff(http, label):
+    other=grant_session(http.app.state.auth_service,role=UserRole.SERVICE_MANAGER,membership=False)
+    http.app.state.auth_service.workshop_directory.grant_membership(other.user.user_id,http.workshops[0],
+        operator_reference=label)
+    return other
+
+
+def _rename(http, grant, name):
+    with http.app.state.auth_service.repository.transaction() as c:
+        c.execute("UPDATE auth_users SET display_name=? WHERE user_id=?",(name,str(grant.user.user_id)))
+
+
+def _attribution_of(view):
+    return (view['created_by_name'],view['created_by_me'],view['last_editor_known'],
+            view['last_edited_by_name'],view['last_edited_by_me'])
+
+
+def test_read_and_list_show_current_names_and_never_actor_ids(http):
+    creator,auth=http.grant,http.app.state.auth_service
+    first=new(http,body(payload={'registration':'A'}))
+    other=_staff(http,'Fictional named staff')
+    _rename(http,creator,'Fictional Owner');_rename(http,other,'Fictional Manager')
+    path='/api/drafts/'+first['draft_id']
+    http.cookies.set(SESSION_COOKIE,other.token.get_secret_value())
+    assert _attribution_of(http.get(path).json())==('Fictional Owner',False,True,'Fictional Owner',False)
+    saved=http.put(path,json={'request_id':str(uuid4()),'expected_revision':1,'payload':{'registration':'B'}},
+                   headers=business_headers(http))
+    assert saved.status_code==200 and set(saved.json())>={'accepted','revision'} and 'created_by_name' not in saved.json()
+    http.cookies.set(SESSION_COOKIE,creator.token.get_secret_value())
+    for view in (http.get(path).json(),http.get('/api/drafts').json()[0]):
+        assert _attribution_of(view)==('Fictional Owner',True,True,'Fictional Manager',False)
+    text=http.get('/api/drafts').text+http.get(path).text
+    for internal in (str(creator.user.user_id),str(other.user.user_id),auth.repository.store_id()):
+        assert internal not in text
+
+
+@pytest.mark.parametrize('case',['closed-departed-creator','name-missing','lookup-outage'])
+def test_missing_or_closed_creator_name_never_blocks_the_shared_draft(http,monkeypatch,case):
+    creator,auth=http.grant,http.app.state.auth_service
+    first=new(http,body(payload={'registration':'Shared'}))
+    other=_staff(http,'Fictional remaining staff')
+    expected=None
+    if case=='closed-departed-creator':
+        auth.workshop_directory.revoke_membership(creator.user.user_id,http.workshops[0],
+                                                 operator_reference='Fictional staff departure')
+        with auth.repository.transaction() as c:
+            c.execute('UPDATE auth_users SET enabled=0 WHERE user_id=?',(str(creator.user.user_id),))
+        expected=creator.user.display_name
+    elif case=='name-missing':
+        monkeypatch.setattr(auth,'display_names',lambda store,ids:{})
+    else:
+        def outage(store,ids):
+            raise sqlite3.OperationalError('Synthetic isolated auth name outage')
+        monkeypatch.setattr(auth,'display_names',outage)
+    http.cookies.set(SESSION_COOKIE,other.token.get_secret_value())
+    single=http.get('/api/drafts/'+first['draft_id'])
+    listed=http.get('/api/drafts')
+    assert single.status_code==200 and listed.status_code==200
+    for view in (single.json(),listed.json()[0]):
+        assert view['payload']=={'registration':'Shared'}
+        assert _attribution_of(view)==(expected,False,True,expected,False)
+
+
+def test_name_lookup_failure_does_not_turn_a_denied_read_into_success(http,monkeypatch):
+    first=new(http,body())
+    monkeypatch.setattr(http.app.state.auth_service,'display_names',lambda store,ids:{})
+    http.cookies.set(SESSION_COOKIE,'x'*43)
+    assert http.get('/api/drafts/'+first['draft_id']).status_code==401
+
+
+def test_me_requires_the_same_store_and_never_infers_a_missing_actor():
+    from types import SimpleNamespace as Namespace
+    from webapp.http_drafts import _attribution
+    request=Namespace(app=Namespace(state=Namespace(auth_service=Namespace(display_names=lambda store,ids:{}))))
+    context=Namespace(auth_store_id='store-a',employee_id='same-id')
+    rows=[Namespace(creator_id='same-id',last_editor_id='same-id',actor_store_id='store-b'),
+          Namespace(creator_id='same-id',last_editor_id=None,actor_store_id='store-a')]
+    other_store,unknown_editor=_attribution(request,context,rows)
+    assert not other_store['created_by_me'] and not other_store['last_edited_by_me']
+    assert unknown_editor['created_by_me'] and not unknown_editor['last_edited_by_me']
+    assert not unknown_editor['last_editor_known'] and unknown_editor['last_edited_by_name'] is None

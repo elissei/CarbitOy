@@ -95,11 +95,13 @@
         <p class="form-error hidden" id="new-work-error" role="alert"></p>
         <section id="draft-controls" aria-label="Tiedusteluluonnoksen tallennus">
           <p id="draft-message" class="notice" role="status" aria-live="polite"></p>
+          <p id="draft-attribution" class="notice" hidden></p>
           <p id="draft-expiry" class="notice"></p>
           <div class="draft-actions">
             <button id="draft-save" class="secondary" type="button">Tallenna luonnos</button>
             <button id="draft-retry" class="secondary" type="button" hidden>Uusi sama tallennus</button>
             <button id="draft-reload" class="secondary" type="button" hidden>Avaa palvelimen versio</button>
+            <button id="draft-discard" class="secondary danger" type="button" hidden>Hylkää luonnos</button>
           </div>
         </section>
         <div class="dialog-actions"><button class="secondary" type="button" data-close>Peruuta</button><button class="primary" type="submit">Tallenna tiedustelu</button></div>

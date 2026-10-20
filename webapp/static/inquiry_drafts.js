@@ -10,6 +10,8 @@ function CarbitInquiryDrafts({ api, form, dialog, workBusy }) {
   const save = document.querySelector("#draft-save");
   const retry = document.querySelector("#draft-retry");
   const reload = document.querySelector("#draft-reload");
+  const discardButton = document.querySelector("#draft-discard");
+  const attributionLine = document.querySelector("#draft-attribution");
   const submit = form.querySelector("button[type=submit]");
   const text = () => JSON.stringify(fields.map(name => form.elements[name].value));
   let snapshot = null, baseline = text(), operation = null;
@@ -21,11 +23,16 @@ function CarbitInquiryDrafts({ api, form, dialog, workBusy }) {
 
   function render() {
     const writer = CarbitAuth.canWrite();
+    const discarding = operation?.kind === "DISCARD";
     panel.hidden = !writer;
-    fields.forEach(name => { form.elements[name].disabled = !writer || reading || workBusy(); });
+    // An unresolved discard may still end the draft: no edits that it would silently drop.
+    fields.forEach(name => { form.elements[name].disabled = !writer || reading || workBusy() || discarding; });
     save.disabled = !writer || busy() || workBusy() || !!operation || blocked;
     retry.hidden = !operation || busy();
     retry.disabled = !writer || workBusy();
+    retry.textContent = discarding ? "Uusi sama hylkäys" : "Uusi sama tallennus";
+    discardButton.hidden = !snapshot;
+    discardButton.disabled = !writer || busy() || workBusy() || !!operation;
     reload.hidden = !snapshot || !blocked;
     reload.disabled = !writer || busy() || workBusy();
     submit.disabled = !writer || workBusy() || !canSubmit();
@@ -33,9 +40,22 @@ function CarbitInquiryDrafts({ api, form, dialog, workBusy }) {
     message.textContent = notice || (dirty() ? "Tallentamattomia muutoksia. Tallenna luonnos käsin."
       : "Luonnos tallentuu vain Tallenna luonnos -painikkeella.");
     if (notice && dirty() && !busy()) message.textContent += " Lomakkeella on tallentamattomia muutoksia.";
+    attributionLine.hidden = !snapshot;
+    attributionLine.textContent = snapshot ? attribution(snapshot) : "";
     expiry.textContent = snapshot
       ? `Tallennetun sisällön säilytysaika päättyy ${new Date(snapshot.expires_at * 1000).toLocaleString("fi-FI")}. Luonnosta ei voi vielä muuntaa tiedusteluksi.`
       : "Tallennettu sisältö säilyy seitsemän päivää viimeisestä sisältömuutoksesta.";
+  }
+
+  // Current names at read time, shown as text only. A missing name never blocks the draft.
+  function person(name, mine) {
+    return `${typeof name === "string" && name.trim() ? name : "Nimi ei saatavilla"}${mine === true ? " (sinä)" : ""}`;
+  }
+
+  function attribution(value) {
+    const editor = value.last_editor_known === true
+      ? person(value.last_edited_by_name, value.last_edited_by_me) : "ei tiedossa";
+    return `Luonut: ${person(value.created_by_name, value.created_by_me)} · Viimeksi muokannut: ${editor}`;
   }
 
   function announce(value, failed = false) { notice = value; error = failed; render(); }
@@ -133,7 +153,7 @@ function CarbitInquiryDrafts({ api, form, dialog, workBusy }) {
         const button = document.createElement("button");
         button.type = "button"; button.className = "secondary draft-row";
         button.dataset.draftId = value.draft_id;
-        button.textContent = `${value.payload.registration || "Keskeneräinen rekisterinumero"} · ${value.payload.customer_description || "Kuvaus kesken"}`;
+        button.textContent = `${value.payload.registration || "Keskeneräinen rekisterinumero"} · ${value.payload.customer_description || "Kuvaus kesken"}\n${attribution(value)}`;
         button.addEventListener("click", () => open(value.draft_id));
         list.append(button);
       }
@@ -206,16 +226,75 @@ function CarbitInquiryDrafts({ api, form, dialog, workBusy }) {
     }
   }
 
+  // Server discard of the shared workshop draft. Separate from the local forget on user change.
+  async function discardOnServer(op) {
+    if (!CarbitAuth.canWrite() || busy() || workBusy()) return;
+    if (Date.now() - op.started >= 86400000) {
+      blocked = true; operation = null;
+      announce("Epäselvä hylkäys on liian vanha uusittavaksi. Tarkista palvelimen luonnoslista ennen jatkamista.", true);
+      return;
+    }
+    const current = ++epoch;
+    operation = op; writing = true;
+    announce("Hylätään luonnosta…");
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
+    try {
+      const ack = await api(op.path, { method: "POST", body: op.body, signal: controller.signal });
+      if (current !== epoch) return;
+      if (ack?.accepted !== true || ack.draft_id !== op.draftId || ack.state !== "DISCARDED"
+          || ack.termination_reason !== "DISCARDED") {
+        throw new Error("invalid discard receipt");
+      }
+      // An ended draft no longer opens: no read-back as after a save. A list request
+      // started before the discard could still show the row, so it is invalidated.
+      listEpoch += 1; refresh.disabled = false;
+      clearEditor();
+      list.querySelector(`[data-draft-id="${CSS.escape(op.draftId)}"]`)?.remove();
+      listMessage.textContent = "Luonnos hylätty. Se ei enää näy korjaamon luonnoksissa.";
+      announce("Luonnos hylätty.");
+    } catch (problem) {
+      if (current !== epoch) return;
+      if ([403, 404, 409].includes(problem.status)) {
+        operation = null; blocked = true;
+        announce(problem.status === 409
+          ? "Versioristiriita: luonnosta ei hylätty, koska palvelimella on uudempi versio. Lomakkeen sisältö säilyi. Avaa palvelimen versio ennen uutta päätöstä."
+          : problem.status === 404
+            ? "Luonnos ei ole enää saatavilla. Se on voinut jo vanhentua tai tulla hylätyksi. Lomakkeen sisältö säilyi."
+            : "Sinulla ei ole oikeutta hylätä tätä luonnosta. Lomakkeen sisältö säilyi.", true);
+      } else if ([400, 413, 415, 422].includes(problem.status)) {
+        operation = null;
+        announce("Hylkäyspyyntöä ei hyväksytty. Lomakkeen sisältö säilyi.", true);
+      } else {
+        announce(`${problem.status === 503 ? "Luonnospalvelu ei ole käytössä tai on tilapäisesti poissa käytöstä. " : ""}Hylkäyksen tulos jäi epäselväksi. Lomakkeen sisältö säilyi. Uusi sama hylkäys -painike lähettää alkuperäisen pyynnön.`, true);
+      }
+    } finally {
+      window.clearTimeout(timeout);
+      if (current === epoch) { writing = false; render(); }
+    }
+  }
+
   save.addEventListener("click", () => {
     if (operation || blocked || busy() || workBusy() || !CarbitAuth.canWrite()) return;
     const value = payload();
     const body = { request_id: crypto.randomUUID(), payload: value };
     if (snapshot) body.expected_revision = snapshot.revision;
     else body.draft_type = "WORK_INQUIRY";
-    persist({ path: snapshot ? `/api/drafts/${snapshot.draft_id}` : "/api/drafts",
+    persist({ kind: "SAVE", path: snapshot ? `/api/drafts/${snapshot.draft_id}` : "/api/drafts",
       method: snapshot ? "PUT" : "POST", body: JSON.stringify(body), payload: value, text: text(), started: Date.now() });
   });
-  retry.addEventListener("click", () => { if (operation) persist(operation); });
+  discardButton.addEventListener("click", () => {
+    if (!snapshot || operation || busy() || workBusy() || !CarbitAuth.canWrite()) return;
+    if (!window.confirm(
+      "Hylätäänkö korjaamon yhteinen luonnos? Luonnos poistuu kaikilta korjaamon käyttäjiltä, eikä sitä voi palauttaa. Lomakkeen tallentamattomat muutokset menetetään."
+    )) return;
+    discardOnServer({ kind: "DISCARD", draftId: snapshot.draft_id, path: `/api/drafts/${snapshot.draft_id}/discard`,
+      body: JSON.stringify({ request_id: crypto.randomUUID(), expected_revision: snapshot.revision }), started: Date.now() });
+  });
+  retry.addEventListener("click", () => {
+    if (operation?.kind === "DISCARD") discardOnServer(operation);
+    else if (operation) persist(operation);
+  });
   reload.addEventListener("click", () => { if (snapshot) open(snapshot.draft_id); });
   refresh.addEventListener("click", loadList);
   fields.forEach(name => form.elements[name].addEventListener("input", () => {
@@ -229,9 +308,15 @@ function CarbitInquiryDrafts({ api, form, dialog, workBusy }) {
     submitted: clearEditor,
     lock() {
       epoch += 1; listEpoch += 1; writing = false; reading = false; refresh.disabled = false;
-      if (operation) { notice = "Tallennuksen tulos jäi epäselväksi. Tarkista kirjautumistila ja uusi tarvittaessa sama tallennus."; error = true; }
+      if (operation) {
+        notice = operation.kind === "DISCARD"
+          ? "Hylkäyksen tulos jäi epäselväksi. Tarkista kirjautumistila ja uusi tarvittaessa sama hylkäys."
+          : "Tallennuksen tulos jäi epäselväksi. Tarkista kirjautumistila ja uusi tarvittaessa sama tallennus.";
+        error = true;
+      }
       render();
     },
+    // Local forget on user change: never a server discard. Clears any unknown operation.
     discard() {
       listEpoch += 1; list.replaceChildren(); listMessage.textContent = "";
       clearEditor();

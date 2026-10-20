@@ -489,6 +489,32 @@ class AuthService:
             raise AuthenticationError("authentication failed")
         return session, user
 
+    MAX_DISPLAY_NAMES = 200
+
+    def display_names(self, store_id: str, user_ids) -> dict[str, str]:
+        """Current display names of HUMAN accounts in this auth store; grants nothing.
+
+        Only for actor IDs that an already authorized read returned. Another
+        store's IDs, unknown or malformed IDs simply get no name. The store
+        identity and the names are read on one connection and snapshot.
+        """
+        wanted = {value for value in user_ids if isinstance(value, str) and len(value) == 36}
+        if len(wanted) > self.MAX_DISPLAY_NAMES:
+            raise ValueError("too many display names requested")
+        if not wanted or not isinstance(store_id, str):
+            return {}
+        with self.repository._connect() as connection:
+            connection.execute("BEGIN")
+            try:
+                if self.repository.store_id(connection) != store_id:
+                    return {}
+                marks = ",".join("?" * len(wanted))
+                return {row["user_id"]: row["display_name"] for row in connection.execute(
+                    f"SELECT user_id,display_name FROM auth_users WHERE kind='HUMAN' AND user_id IN ({marks})",
+                    tuple(wanted))}
+            finally:
+                connection.rollback()
+
     def require_session(self, token: str) -> User:
         return self.inspect_session(token, touch=True).user
 

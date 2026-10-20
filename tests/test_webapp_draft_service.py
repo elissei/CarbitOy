@@ -594,3 +594,40 @@ def test_two_staff_controlled_save_race_has_one_author_and_no_loser_receipt(http
     assert authors(http.app.state.repository,row.draft_id)==(people[0].employee_id,people[winner].employee_id)
     with http.app.state.repository._connect() as c:
         assert not c.execute('SELECT 1 FROM draft_request_receipts WHERE request_id=?',(keys[1-winner],)).fetchone()
+
+
+def test_snapshots_carry_creator_latest_content_editor_and_store(http,drafts):
+    first=ctx(http);second=colleague(http)
+    row=new(drafts,first,payload={'registration':'A'})
+    for snap in (drafts.read(second,row.draft_id),drafts.list(second)[0]):
+        assert (snap.creator_id,snap.last_editor_id,snap.actor_store_id)==(first.employee_id,first.employee_id,first.auth_store_id)
+    drafts.save(second,row.draft_id,expected_revision=1,request_id=str(uuid4()),payload={'registration':'B'})
+    drafts.save(first,row.draft_id,expected_revision=2,request_id=str(uuid4()),payload={'registration':'B'})  # no-op
+    for snap in (drafts.read(first,row.draft_id),drafts.list(first)[0]):
+        assert (snap.creator_id,snap.last_editor_id,snap.actor_store_id)==(first.employee_id,second.employee_id,first.auth_store_id)
+
+
+def test_later_revision_without_a_content_change_receipt_has_an_unknown_editor():
+    row={'draft_id':'d','draft_type':'WORK_INQUIRY','revision':2,'payload_json':'{}','payload_schema_version':1,
+         'work_id':None,'original_work_version':None,'created_at':1,'last_content_saved_at':2,'expires_at':3,
+         'owner_employee_id':'creator','auth_store_id':'store'}
+    assert DraftRepository._snapshot(row).last_editor_id is None  # e.g. pre-v4 receipts: never guessed
+    assert DraftRepository._snapshot(row|{'revision':1}).last_editor_id=='creator'
+    assert DraftRepository._snapshot(row,{'d':'editor'}).last_editor_id=='editor'
+
+
+def test_display_names_are_store_bound_human_only_bounded_and_grant_nothing(http,drafts):
+    from webapp.auth_models import UserRole
+    auth=http.app.state.auth_service
+    first=ctx(http);other=colleague(http)
+    service=auth.provision_identity(username='test.service.'+uuid4().hex,display_name='Fictional service',
+                                    role=UserRole.OPENCLAW,password=None)
+    with auth.repository.transaction() as c:
+        c.execute("UPDATE auth_users SET display_name='Fictional Colleague',enabled=0 WHERE user_id=?",(other.employee_id,))
+    store=auth.repository.store_id()
+    names=auth.display_names(store,[first.employee_id,other.employee_id,str(service.user_id),str(uuid4()),'not-a-uuid',None])
+    assert set(names)=={first.employee_id,other.employee_id} and names[other.employee_id]=='Fictional Colleague'
+    assert auth.display_names(str(uuid4()),[first.employee_id])=={}  # another auth store's identical ID
+    assert auth.display_names(store,[])=={}
+    with pytest.raises(ValueError):
+        auth.display_names(store,[str(uuid4()) for _ in range(auth.MAX_DISPLAY_NAMES+1)])

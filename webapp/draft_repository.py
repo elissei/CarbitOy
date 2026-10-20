@@ -83,10 +83,27 @@ class DraftRepository:
         return row
 
     @staticmethod
-    def _snapshot(row):
+    def _last_editors(connection, draft_ids):
+        """Author of the latest content-changing SAVE per draft, in one bounded query."""
+        if not draft_ids:
+            return {}
+        marks = ','.join('?'*len(draft_ids))
+        return dict(connection.execute(f'''SELECT draft_id,requester_employee_id FROM (
+            SELECT draft_id,requester_employee_id,ROW_NUMBER() OVER (
+                PARTITION BY draft_id ORDER BY accepted_revision DESC) AS position
+            FROM draft_request_receipts
+            WHERE operation='SAVE' AND content_changed=1 AND draft_id IN ({marks}))
+            WHERE position=1''',tuple(draft_ids)).fetchall())
+
+    @staticmethod
+    def _snapshot(row, editors=None):
+        # Revision 1 has never changed content, so the creator is the editor. A later
+        # revision without a content-change receipt (e.g. pre-v4 data) stays unknown.
+        editor = (editors or {}).get(row['draft_id']) or (row['owner_employee_id'] if row['revision']==1 else None)
         return DraftSnapshot(row['draft_id'],DraftType(row['draft_type']),row['revision'],
             json.loads(row['payload_json']),row['payload_schema_version'],row['work_id'],
-            row['original_work_version'],row['created_at'],row['last_content_saved_at'],row['expires_at'])
+            row['original_work_version'],row['created_at'],row['last_content_saved_at'],row['expires_at'],
+            row['owner_employee_id'],editor,row['auth_store_id'])
 
     def _message(self, context, operation, request):
         return json.dumps(['carbit.private-draft-request.v1',*_request_scope(context),operation,request],
@@ -177,7 +194,8 @@ class DraftRepository:
 
     def read(self, context, draft_id):
         with self._operation(context) as connection:
-            return self._snapshot(self._active(connection,context,_uuid(draft_id,unavailable=True)))
+            row = self._active(connection,context,_uuid(draft_id,unavailable=True))
+            return self._snapshot(row,self._last_editors(connection,[row['draft_id']]))
 
     def list(self, context, *, limit=50):
         with self._operation(context) as connection:
@@ -185,7 +203,8 @@ class DraftRepository:
                 raise ValueError('draft list limit must be 1..100')
             rows = connection.execute(f'''SELECT * FROM active_drafts WHERE {DRAFT_SCOPE}
                 ORDER BY created_at,draft_id LIMIT ?''',(*_draft_scope(context),limit)).fetchall()
-            return tuple(self._snapshot(row) for row in rows)
+            editors = self._last_editors(connection,[row['draft_id'] for row in rows])
+            return tuple(self._snapshot(row,editors) for row in rows)
 
     def save(self, context, draft_id, *, expected_revision, request_id, payload):
         with self._operation(context,write=True) as connection:
