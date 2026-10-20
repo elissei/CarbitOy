@@ -134,6 +134,7 @@ The auth service records rate-limit counters and audit events in the auth databa
 | `AuthService` | `begin_login()` | Checks the password and records a login or enrollment challenge. |
 | `AuthService` | `complete_login()` | Validates a TOTP or recovery code and grants a session. |
 | `AuthService` | `inspect_session()` | Revalidates a session, optionally refreshing idle time. |
+| `AuthService` | `display_names()` | Returns up to 200 current human-account names for actor IDs in the same auth store; unknown or other-store IDs have no name. It grants no authorization. |
 | `AuthService` | `reserve_http_auth()` | Applies per-client and global HTTP authentication budgets before handling a request. |
 | `AuthService` | `reserve_logout_global()` | Applies the logout global budget after a valid session and CSRF proof. |
 | `AuthService` | `audit_http_auth()` | Records HTTP authentication results, sampling selected repeated denials. |
@@ -182,7 +183,7 @@ The login route exposes neither enrollment secrets nor recovery codes. The passw
 
 The auth gateway audits HTTP endpoint results, while the service records password, MFA, session, reset, and recovery events in the authentication store.
 
-The browser uses the HttpOnly session cookie without reading it; it receives only a public CSRF proof and a bounded user/session view from the API. Protected business requests additionally need the membership described in [Workshop Access](./workshop-access.md).
+The browser uses the HttpOnly session cookie without reading it; it receives only a public CSRF proof and a bounded user/session view from the API. Protected business requests additionally need the membership described in [Workshop Access](./workshop-access.md). After an authorized draft read or list, the draft HTTP adapter uses `display_names()` to resolve current names; see [Inquiry Drafts](./inquiry-drafts.md) for its response fields and browser display.
 
 ## Integration Points
 

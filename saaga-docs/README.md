@@ -34,7 +34,7 @@ What the system does, end to end, in index order.
 - [Labour Planning](./features/labour-planning.md) — Selects full-scope original times, reports coverage issues, and requires explicit current human review before approved hours are available.
 - [Employee Authentication](./features/employee-authentication.md) — Signs employees in with password and MFA, enforces session and CSRF gates, supports logout, and describes trusted recovery services and local consoles.
 - [Workshop Access](./features/workshop-access.md) — Establishes and selects explicit employee workshop membership and scopes protected inquiry operations.
-- [Inquiry Drafts](./features/inquiry-drafts.md) — Manually saves and reopens workshop inquiry drafts with revision checks, replay receipts, and bounded retention.
+- [Inquiry Drafts](./features/inquiry-drafts.md) — Manually saves, reopens, and discards shared workshop inquiry drafts with revision checks, retry receipts, actor names, and bounded retention.
 - [Approved Labour](./features/approved-labour.md) — Stores versioned original times and human decisions, gates approved hours, and prices current labour approval.
 
 ## Indexes

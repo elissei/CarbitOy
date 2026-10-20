@@ -13,7 +13,7 @@ definition verbatim — to change one, change the INDEX row it comes from.
 - [Customer Intake](./features/customer-intake.md) — Interprets messages, routes requests needing a person, and composes ready work items into demo proposals.
 - [Employee Authentication](./features/employee-authentication.md) — Signs employees in with password and MFA, enforces session and CSRF gates, supports logout, and describes trusted recovery services and local consoles.
 - [Final Quote and Presentation](./features/final-quote.md) — Calculates and validates a final quote, formats Finnish price text, and optionally produces a work description.
-- [Inquiry Drafts](./features/inquiry-drafts.md) — Manually saves and reopens workshop inquiry drafts with revision checks, replay receipts, and bounded retention.
+- [Inquiry Drafts](./features/inquiry-drafts.md) — Manually saves, reopens, and discards shared workshop inquiry drafts with revision checks, retry receipts, actor names, and bounded retention.
 - [Labour Planning](./features/labour-planning.md) — Selects full-scope original times, reports coverage issues, and requires explicit current human review before approved hours are available.
 - [LabourTimeEntry](./concepts/work-plans.md) — Domain work and labour plan contracts, original time coverage, and the distinct application snapshot and revision identifiers.
 - [Local Work Queue](./features/local-work-queue.md) — Lists workshop-scoped inquiries, records session-attributed manual Autodata time, and shows inclusive labour prices and versioned history.
