@@ -1184,3 +1184,39 @@ def test_list_request_started_before_discard_cannot_restore_the_discarded_row(pa
     expect(page.locator(f'[data-draft-id="{did}"]')).to_have_count(0)
     expect(page.locator("#draft-list-message")).to_contain_text("Luonnos hylätty")
     assert failures == [] and stored(local_app, did) is None
+
+
+def rename(app, user_id, name):
+    with app.auth_service.repository.transaction() as connection:
+        connection.execute("UPDATE auth_users SET display_name=? WHERE user_id=?", (name, str(user_id)))
+
+
+def test_list_and_editor_show_creator_and_latest_editor_as_text(page, local_app, other_staff, monkeypatch):
+    other, staff = other_staff
+    owner = user_for(local_app)
+    rename(local_app, owner.user_id, "<b>Fictional Owner</b>")
+    rename(local_app, staff.user.user_id, "Fictional Manager")
+    start(page, local_app, "Nimetty luonnos", "TEST-NAMES")
+    did = save(page)
+    expect(page.locator("#draft-attribution")).to_have_text(
+        "Luonut: <b>Fictional Owner</b> (sinä) · Viimeksi muokannut: <b>Fictional Owner</b> (sinä)")
+    other.goto(local_app[0], wait_until="networkidle")
+    open_saved(other, did)
+    form(other, "customer_description").fill("Kollegan muutos")
+    save(other)
+    expect(other.locator("#draft-attribution")).to_have_text(
+        "Luonut: <b>Fictional Owner</b> · Viimeksi muokannut: Fictional Manager (sinä)")
+    close(page)
+    with page.expect_response(lambda r: "/api/drafts?limit=100" in r.url):
+        page.locator("#draft-list-refresh").click()
+    row = page.locator(f'[data-draft-id="{did}"]')
+    expect(row).to_contain_text("Luonut: <b>Fictional Owner</b> (sinä) · Viimeksi muokannut: Fictional Manager")
+    expect(page.locator(".draft-row b")).to_have_count(0)  # Names are text, never markup.
+    monkeypatch.setattr(local_app.auth_service, "display_names", lambda store, ids: {})
+    with page.expect_response(lambda r: "/api/drafts?limit=100" in r.url):
+        page.locator("#draft-list-refresh").click()
+    expect(row).to_contain_text("Luonut: Nimi ei saatavilla (sinä) · Viimeksi muokannut: Nimi ei saatavilla")
+    row.click()
+    expect(page.locator("#draft-message")).to_contain_text("Palvelimen luonnos avattu")
+    expect(form(page, "customer_description")).to_have_value("Kollegan muutos")
+    expect(page.locator("#draft-attribution")).to_contain_text("Luonut: Nimi ei saatavilla (sinä)")

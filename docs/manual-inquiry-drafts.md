@@ -94,6 +94,32 @@ korjaamon kirjoitusoikeudellinen henkilöstön jäsen voi hylätä yhteisen luon
 - **Uloskirjautuminen.** Uloskirjautumisen tai käyttäjänvaihdon yhteydessä tehtävä
   paikallinen tyhjennys ei koskaan hylkää luonnosta palvelimelta.
 
+## Luoja ja viimeisin muokkaaja (DRAFT-B, 20.10.2026)
+
+Luettelorivi ja avattu luonnos näyttävät tekstin "Luonut: X · Viimeksi
+muokannut: Y". Omalla kohdalla nimen perään tulee "(sinä)".
+
+**Muokkaaja** on viimeisimmän sisältöä muuttaneen tallennuksen tekijä:
+- Muuttumaton tallennus tai kuitin uusinta ei vaihda muokkaajaa.
+- Luonnoksessa, jota ei ole muokattu (revisio 1), muokkaaja on luoja.
+- Jos myöhemmälle revisiolle ei löydy sisältömuutoksen kuittia (esim. ennen
+  versiota 4 tallennettu aineisto), näytetään "ei tiedossa". Muokkaajaa ei
+  päätellä.
+
+**Nimet** ovat lukuhetken nykyisiä näyttönimiä:
+- Palvelin hakee ne auth-kannasta (`AuthService.display_names`) vasta, kun
+  valtuutettu luonnosluku on valmis.
+- Haku tehdään identiteetillä `auth_store_id` + `user_id`. Toisen auth-kannan
+  samannäköinen tunniste ei saa nimeä.
+- Myös suljetun tai jäsenyytensä menettäneen toimijan nimi näytetään, jos tili on
+  olemassa. Tämä ei anna toimijalle pääsyä luonnokseen.
+- Puuttuva nimi tai nimihaun tallennusvirhe näkyy muodossa "Nimi ei saatavilla",
+  eikä se estä luonnoksen avaamista eikä muuta 401- tai 403-vastausta.
+- Nimet näytetään tekstinä, eivät HTML:nä.
+- Selaimelle ei lähetetä käyttäjä- tai kantatunnisteita. "Minä" vaatii saman
+  auth-kannan ja saman tunnisteen.
+- Avoin näkymä ei päivity automaattisesti, jos nimi vaihtuu.
+
 ## Rajaus ja testit
 
 Nykyinen uuden tiedustelun **Tallenna tiedustelu** säilyy ennallaan. Palvelimelle
@@ -101,7 +127,7 @@ tallennetussa/avatussa luonnoksessa lopullinen tallennuspainike on estetty:
 luonnoksen muunnosta tai lähettämistä ei ole tässä toteutettu. Aloita erillinen
 uusi tiedustelu käyttääksesi nykyistä polkua; luonnos säilyy palvelimella.
 
-Ei autosavea, LABOUR_ENTRY-editoria, luojan tai muokkaajan näyttöä (DRAFT-B), muunnosta, lopullista työajan
+Ei autosavea, LABOUR_ENTRY-editoria, historiallisia nimitilannekuvia, muunnosta, lopullista työajan
 lähetystä, hyväksyntää, integraatioita, WD-3:a, SEC-2B:tä tai uusia monen korjaamon
 ominaisuuksia. Backendin käyttöoikeusraja on nyt korjaamon yhteinen; sisältö-, revision- ja
 retention-sopimus säilyy. Luoja ei vaihdu, todellisen sisältömuutoksen tekijä

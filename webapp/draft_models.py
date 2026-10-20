@@ -75,3 +75,8 @@ class DraftSnapshot:
     created_at: int = 0
     last_content_saved_at: int = 0
     expires_at: int = 0
+    # Server-only attribution (never serialized to the browser): the creator, the
+    # author of the latest content change (None when unknown), and their auth store.
+    creator_id: str | None = None
+    last_editor_id: str | None = None
+    actor_store_id: str | None = None

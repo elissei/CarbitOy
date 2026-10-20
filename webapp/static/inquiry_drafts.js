@@ -11,6 +11,7 @@ function CarbitInquiryDrafts({ api, form, dialog, workBusy }) {
   const retry = document.querySelector("#draft-retry");
   const reload = document.querySelector("#draft-reload");
   const discardButton = document.querySelector("#draft-discard");
+  const attributionLine = document.querySelector("#draft-attribution");
   const submit = form.querySelector("button[type=submit]");
   const text = () => JSON.stringify(fields.map(name => form.elements[name].value));
   let snapshot = null, baseline = text(), operation = null;
@@ -39,9 +40,22 @@ function CarbitInquiryDrafts({ api, form, dialog, workBusy }) {
     message.textContent = notice || (dirty() ? "Tallentamattomia muutoksia. Tallenna luonnos käsin."
       : "Luonnos tallentuu vain Tallenna luonnos -painikkeella.");
     if (notice && dirty() && !busy()) message.textContent += " Lomakkeella on tallentamattomia muutoksia.";
+    attributionLine.hidden = !snapshot;
+    attributionLine.textContent = snapshot ? attribution(snapshot) : "";
     expiry.textContent = snapshot
       ? `Tallennetun sisällön säilytysaika päättyy ${new Date(snapshot.expires_at * 1000).toLocaleString("fi-FI")}. Luonnosta ei voi vielä muuntaa tiedusteluksi.`
       : "Tallennettu sisältö säilyy seitsemän päivää viimeisestä sisältömuutoksesta.";
+  }
+
+  // Current names at read time, shown as text only. A missing name never blocks the draft.
+  function person(name, mine) {
+    return `${typeof name === "string" && name.trim() ? name : "Nimi ei saatavilla"}${mine === true ? " (sinä)" : ""}`;
+  }
+
+  function attribution(value) {
+    const editor = value.last_editor_known === true
+      ? person(value.last_edited_by_name, value.last_edited_by_me) : "ei tiedossa";
+    return `Luonut: ${person(value.created_by_name, value.created_by_me)} · Viimeksi muokannut: ${editor}`;
   }
 
   function announce(value, failed = false) { notice = value; error = failed; render(); }
@@ -139,7 +153,7 @@ function CarbitInquiryDrafts({ api, form, dialog, workBusy }) {
         const button = document.createElement("button");
         button.type = "button"; button.className = "secondary draft-row";
         button.dataset.draftId = value.draft_id;
-        button.textContent = `${value.payload.registration || "Keskeneräinen rekisterinumero"} · ${value.payload.customer_description || "Kuvaus kesken"}`;
+        button.textContent = `${value.payload.registration || "Keskeneräinen rekisterinumero"} · ${value.payload.customer_description || "Kuvaus kesken"}\n${attribution(value)}`;
         button.addEventListener("click", () => open(value.draft_id));
         list.append(button);
       }

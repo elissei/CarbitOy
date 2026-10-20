@@ -94,6 +94,34 @@ class SnapshotResponse(BaseModel):
     created_at: int
     last_content_saved_at: int
     expires_at: int
+    # Current display names at read time; actor IDs never reach the browser.
+    created_by_name: str | None = None
+    created_by_me: bool = False
+    last_editor_known: bool = False
+    last_edited_by_name: str | None = None
+    last_edited_by_me: bool = False
+
+
+def _attribution(request, context, snapshots):
+    """Names for actors of drafts the caller was already authorized to read.
+
+    Runs after the business read and its auth binding have closed, so the
+    auth -> business order is kept. Only a storage outage of the name lookup
+    degrades to missing names; the draft read itself has already succeeded.
+    """
+    ids={value for row in snapshots for value in (row.creator_id,row.last_editor_id) if value}
+    stores={row.actor_store_id for row in snapshots}
+    names={}
+    if ids and len(stores)==1:
+        try:
+            names=request.app.state.auth_service.display_names(next(iter(stores)),ids)
+        except (sqlite3.DatabaseError,RuntimeError):
+            names={}
+    def mine(row,actor):
+        return actor is not None and row.actor_store_id==context.auth_store_id and actor==context.employee_id
+    return [{'created_by_name':names.get(row.creator_id),'created_by_me':mine(row,row.creator_id),
+             'last_editor_known':row.last_editor_id is not None,'last_edited_by_name':names.get(row.last_editor_id),
+             'last_edited_by_me':mine(row,row.last_editor_id)} for row in snapshots]
 
 
 def _error(status,detail):
@@ -194,11 +222,15 @@ def _execute(request, resolver, operation, *, payload=None, draft_id=None, limit
     except (ValueError,TypeError):
         _error(422,'Invalid draft request')
     try:
-        if operation=='list':
-            data=[SnapshotResponse.model_validate(row).model_dump(mode='json') for row in result]
+        if operation in ('list','read'):
+            rows=result if operation=='list' else (result,)
+            data=[SnapshotResponse.model_validate(
+                      SnapshotResponse.model_validate(row).model_dump()|attribution).model_dump(mode='json')
+                  for row,attribution in zip(rows,_attribution(request,context,rows))]
+            if operation=='read':
+                data=data[0]
         else:
-            model=SnapshotResponse if operation=='read' else ReceiptResponse
-            data=model.model_validate(result).model_dump(mode='json')
+            data=ReceiptResponse.model_validate(result).model_dump(mode='json')
     except (ValidationError,ValueError,TypeError):
         _error(503,'Draft service unavailable')
     return JSONResponse(data,status_code=201 if operation=='create' else 200,
