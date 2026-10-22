@@ -118,8 +118,9 @@ ja konsoli commitissa `ad035e0`. Lisäksi P3-auditointikorjaukset ovat commitiss
 
 **Tila: TOTEUTETTU JA TESTATTU, 17.10.2026. Palvelukerros ja auth-skeema
 katselmoitu ja commitoitu 19.10.2026 (`c29b8c2`), konsoli 20.10.2026 (`ad035e0`),
-P3-jatkokorjaukset 20.10.2026 (`da03f7f`).
-Ketjua ei ole harjoiteltu oikealla konsolilla eikä hyväksytty käyttöön.**
+P3-jatkokorjaukset 20.10.2026 (`da03f7f`). Synteettinen harjoitus oikealla
+konsolilla suoritettiin kummallekin roolille 22.10.2026. Menettelyä ei ole hyväksytty
+käyttöön.**
 
 - **Toteutus:** paikallinen palautusketju, jossa on kolme vaihetta:
   1. IT_ADMINin tuore TOTP-valtuutus
@@ -133,6 +134,33 @@ Ketjua ei ole harjoiteltu oikealla konsolilla eikä hyväksytty käyttöön.**
   Palvelukerroksen katselmoinnissa korjattiin P2-virhe: IT_ADMIN-tilin
   offline-palautuksen viimeistely ei nollannut version 4 asettamaa
   palautuslippua, jolloin tili jäi suljetuksi.
-- **Avoimina säilyvät:** D3, liiketoimintakäyttäjän palautusharjoitus oikealla konsolilla ja
-  ilmoitusten toimitus. Tämä kohta ei laajenna E1:n sulkemista eikä anna
-  pilotti- tai tuotantohyväksyntää.
+- **Harjoitus 22.10.2026 (`owner-manager-3`): OWNER ja SERVICE_MANAGER valmistuivat
+  synteettisessä ympäristössä.**
+  - **Palautuslipun esto:** pelkkä oikea salasana tuotti palautuksen aloituksen
+    jälkeen tapahtumat `ENROLLMENT_REQUIRES_RECOVERY_GRANT` (#47 ja #61).
+  - **Aloitus:** `auth_version` nousi 1 → 2. Aiemmat istunnot mitätöitiin, ja vanha
+    TOTP ja palautuskoodit poistuivat.
+  - **Valmistuminen:** palautukset päättyivät tilaan `COMPLETED`, ja kummallekin
+    tilille syntyi kymmenen uutta palautuskoodia.
+  - **Uusi tekijä:** kirjautuminen uudella TOTP:llä onnistui, ja istunnot mitätöitiin.
+  - **Poikkeamat:**
+    - P-4: OWNERin ensimmäinen kirjautuminen ennen aloitusta hylättiin. Käyttäjä
+      ilmoitti virheen omakseen, ja MAIN hyväksyi erikseen yhden uusinnan, joka
+      onnistui.
+    - M-1 ja M-2: synteettisiä siemeniä päätyi keskusteluun. Niitä ei ole kirjattu.
+  - **Rajaukset:**
+    - Henkilöllisyyden tarkistus oli simuloitu, ja sama henkilö esitti molempia
+      osapuolia.
+    - Ilmoitusjonoon syntyi `MFA_RESET`-rivit, mutta niitä ei toimitettu.
+    - Harjoitus ei hyväksy käyttöönottoa eikä osoita salaisuuksien turvallista
+      luovutusta.
+    - Aiempien kertojen P-2:n ja P-3:n historialliset syyt jäävät avoimiksi.
+  - Kuvaus: [toteutuneet tulokset](mfa-emergency-recovery.md#toteutuneet-tulokset).
+- **Avoimina säilyvät:**
+  - D3
+  - ilmoitusten toimitus
+  - todellinen henkilöllisyyden tarkistus
+  - kahden henkilön menettely
+  - kohdeympäristön varmennus.
+
+  Tämä kohta ei laajenna E1:n sulkemista eikä anna pilotti- tai tuotantohyväksyntää.
