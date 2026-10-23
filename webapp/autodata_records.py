@@ -1,13 +1,14 @@
 """Autodata 1B persistence helpers: canonical digests, timestamps and minimisation.
 
-Registration, VIN and free search text are stored in the redactable inputs
-table. Texts entering immutable JSON pass the plan 2.6 heuristic, which blocks
-known forms only; it is no guarantee that the JSON holds no VIN or personal
-data (structural removability is task 1B-2.0).
+Since 1B-2.0 every external or staff text, and every digest of it, is stored
+only in the deletable payload; the immutable body keeps closed values that
+CARBIT parsed or validated itself (closed_body). The plan 2.6 heuristic still
+runs as an extra guard, but removability no longer depends on it.
 """
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Literal
@@ -18,12 +19,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from integrations.autodata.models import (
     ChoiceIdentity, LabourTimeLookupResult, LabourTimeRequest, LookupOutcome,
 )
+from integrations.autodata.time_parser import TimeRejection, parse_labour_time
 from webapp.autodata_migrations import MAX_RESULT_JSON_BYTES
 
 
 LOOKUP_CONTRACT = "carbit.autodata.lookup.authenticated.v1"
-ACCEPT_CONTRACT = "carbit.autodata.accept.authenticated.v1"
-MAX_WORK_DESCRIPTION = 2000
 _VIN_LIKE = re.compile(r"[A-HJ-NPR-Z0-9]{17}")
 _SEPARATORS = re.compile(r"[\s\-]+")
 _TOKEN_SPLIT = re.compile(r"[^A-Z0-9]+")
@@ -56,14 +56,10 @@ def identity_json(identity: ChoiceIdentity) -> str:
     return canonical_json(identity.model_dump(mode="json"))
 
 
-def command_digest(contract: str, *, actor_user_id: str, inquiry_id: str, body: dict,
-                   lookup_id: str | None = None) -> str:
-    """Only the client's own command: path parameters and body, no server values."""
-    command = {"contract": contract, "actor_user_id": actor_user_id,
-               "inquiry_id": inquiry_id, "body": body}
-    if lookup_id is not None:
-        command["lookup_id"] = lookup_id
-    return digest(command)
+def command_digest(contract: str, *, actor_user_id: str, inquiry_id: str, body: dict) -> str:
+    """Only the client's own lookup command: path parameters and body, no server values."""
+    return digest({"contract": contract, "actor_user_id": actor_user_id,
+                   "inquiry_id": inquiry_id, "body": body})
 
 
 def _tokens(text: str) -> list[str]:
@@ -176,8 +172,62 @@ def minimise_result(result: LabourTimeLookupResult, *, registration: str,
                  for text in _result_texts(result))
     oversize = len(canonical_json(result.model_dump(mode="json")).encode("utf-8")) > MAX_RESULT_JSON_BYTES
     if leaked or oversize:
-        return LabourTimeLookupResult(outcome=LookupOutcome.SITE_CHANGED, provenance=result.provenance)
+        return _site_changed(result)
     return result
+
+
+def _site_changed(result: LabourTimeLookupResult) -> LabourTimeLookupResult:
+    return LabourTimeLookupResult(outcome=LookupOutcome.SITE_CHANGED, provenance=result.provenance)
+
+
+@dataclass(frozen=True)
+class ClosedBody:
+    """Closed lookup values for the immutable body; no source text at all."""
+
+    outcome: str
+    level: str | None
+    candidate_count: int
+    hours: object
+    time_text: str | None
+    rejection_code: str | None
+
+
+def normalised_time_text(result: LabourTimeLookupResult) -> str | None:
+    """'<number> <unit>' re-parsed to the same hours, or None when it does not."""
+    reading = result.time
+    text = f"{reading.number_text} {reading.unit_evidence.lower()}"
+    parsed = parse_labour_time(text)
+    if parsed.reading is None or parsed.reading.hours != reading.hours:
+        return None
+    return text
+
+
+def closed_body(result: LabourTimeLookupResult) -> tuple[LabourTimeLookupResult, ClosedBody]:
+    """(result to store in the payload, its closed body values).
+
+    A FOUND time that does not re-parse to the same hours, or a rejection
+    reason outside TimeRejection, cannot be stored as a closed value; the
+    result then becomes SITE_CHANGED without choices or time.
+    """
+    time_text = rejection_code = None
+    if result.outcome == LookupOutcome.FOUND:
+        time_text = normalised_time_text(result)
+        if time_text is None:
+            result = _site_changed(result)
+    elif result.outcome == LookupOutcome.UNPARSEABLE:
+        if result.rejection_reason in {reason.value for reason in TimeRejection}:
+            rejection_code = result.rejection_reason
+        else:
+            result = _site_changed(result)
+    found = result.outcome == LookupOutcome.FOUND
+    return result, ClosedBody(
+        outcome=result.outcome.value,
+        level=result.level.value if result.level is not None else None,
+        candidate_count=len(result.candidates),
+        hours=result.time.hours if found else None,
+        time_text=time_text if found else None,
+        rejection_code=rejection_code if result.outcome == LookupOutcome.UNPARSEABLE else None,
+    )
 
 
 def split_request(request: LabourTimeRequest) -> tuple[dict, dict]:
@@ -199,22 +249,19 @@ def split_request(request: LabourTimeRequest) -> tuple[dict, dict]:
 
 
 class AcceptLookupCommand(BaseModel):
-    """Staff acceptance; hours never come from the browser."""
+    """Closed staff acceptance (P6): the server-created lookup_id in the path binds it.
+
+    No identities, labels, time text, hours or digests; any extra field is a
+    validation error. The receipt compares these closed fields directly.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     request_id: str
     expected_version: int = Field(ge=1, strict=True)
-    expected_result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    vehicle_identity: ChoiceIdentity
-    operation_identity: ChoiceIdentity
-    variant_identity: ChoiceIdentity
     confirmation: Literal["VEHICLE_OPERATION_VARIANT_TIME"]
 
     @field_validator("request_id")
     @classmethod
     def validate_request_id(cls, value: str) -> str:
         return canonical_uuid(value)
-
-    def body(self) -> dict:
-        return self.model_dump(mode="json")
