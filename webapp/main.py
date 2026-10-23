@@ -13,11 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from domain.models.labour_time import LabourTime, LabourTimeSource
-from services.labour_pricing import (
-    VAT_RATE,
-    calculate_labour_cost,
-    split_inclusive_vat,
-)
+from webapp.labour_snapshot import UnpriceableLabourTimeError, build_labour_snapshot
 from webapp.database import (
     IdempotencyConflictError,
     VersionConflictError,
@@ -263,9 +259,8 @@ def create_app(
                 autodata_reference=payload.autodata_reference,
                 recorded_by=str(actor.user_id),
             )
-            labour_cost = calculate_labour_cost(labour_time)
-            net_price, vat_price = split_inclusive_vat(labour_cost.total_price)
-        except (ValidationError, InvalidOperation, Overflow) as error:
+            snapshot = build_labour_snapshot(labour_time)
+        except (ValidationError, InvalidOperation, Overflow, UnpriceableLabourTimeError) as error:
             raise HTTPException(
                 status_code=422,
                 detail=(
@@ -273,19 +268,6 @@ def create_app(
                     "positiivista senttihintaa. Tarkista Autodatasta kirjattu aika."
                 ),
             ) from error
-        snapshot = {
-            "hours": str(labour_time.hours),
-            "source": labour_time.source.value,
-            "work_description": labour_time.work_description or "",
-            "recorded_by": labour_time.recorded_by or "",
-            "autodata_reference": labour_time.autodata_reference or "",
-            "hourly_rate": str(labour_cost.hourly_rate),
-            "total_price": str(labour_cost.total_price),
-            "net_price": str(net_price),
-            "vat_price": str(vat_price),
-            "vat_rate": str(VAT_RATE),
-            "currency": labour_cost.currency,
-        }
         try:
             return request.app.state.repository.record_labour(
                 work_id=work_id,

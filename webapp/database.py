@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from webapp.labour_migrations import apply_labour_migrations
 from webapp.draft_migrations import apply_draft_migrations
+from webapp.autodata_migrations import apply_autodata_migrations
 from webapp.business_identity import BusinessActor
 from webapp.workshop_context import TrustedWorkshopContext, WorkshopPermission
 from webapp.workshop_migrations import apply_workshop_migrations
@@ -99,6 +100,7 @@ class WorkRepository:
         apply_labour_migrations(connection)
         apply_workshop_migrations(connection)
         apply_draft_migrations(connection)
+        apply_autodata_migrations(connection)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -290,39 +292,53 @@ class WorkRepository:
             self._find_inquiry(connection, work_id, context)
             if context.actor is not None and actor != context.actor:
                 raise ValueError("actor must match the workshop context")
-            cursor = connection.execute(
-                """
-                UPDATE work_inquiries SET
-                    labour_hours = ?, labour_source = ?,
-                    labour_work_description = ?, labour_recorded_by = ?,
-                    autodata_reference = ?, hourly_rate = ?,
-                    total_price = ?, net_price = ?, vat_price = ?,
-                    vat_rate = ?, currency = ?, updated_at = ?,
-                    version = version + 1
-                WHERE id = ? AND version = ?
-                """,
-                (
-                    labour["hours"], labour["source"],
-                    labour["work_description"], labour["recorded_by"],
-                    labour["autodata_reference"], labour["hourly_rate"],
-                    labour["total_price"], labour["net_price"],
-                    labour["vat_price"], labour["vat_rate"],
-                    labour["currency"], now, work_id, expected_version,
-                ),
-            )
-            if cursor.rowcount == 0:
-                raise VersionConflictError(work_id)
-            self._insert_event(
-                connection,
-                work_id=work_id,
-                occurred_at=now,
+            self._apply_labour(
+                connection, work_id=work_id, expected_version=expected_version,
+                labour=labour, details=details, occurred_at=now,
                 event_type="AUTODATA_TYOAIKA_KIRJATTU",
-                actor=labour["recorded_by"],
-                details=details,
-                work_version=expected_version + 1,
             )
             result = self._read_work(connection, work_id, context)
         return result
+
+    def _apply_labour(self, connection, *, work_id, expected_version, labour, details,
+                      occurred_at, event_type) -> int:
+        """Write the labour snapshot and its event in the CALLER's transaction.
+
+        Never begins, commits or rolls back. Returns the inserted event ID.
+        """
+        if not connection.in_transaction:
+            raise RuntimeError("labour changes require the caller's transaction")
+        cursor = connection.execute(
+            """
+            UPDATE work_inquiries SET
+                labour_hours = ?, labour_source = ?,
+                labour_work_description = ?, labour_recorded_by = ?,
+                autodata_reference = ?, hourly_rate = ?,
+                total_price = ?, net_price = ?, vat_price = ?,
+                vat_rate = ?, currency = ?, updated_at = ?,
+                version = version + 1
+            WHERE id = ? AND version = ?
+            """,
+            (
+                labour["hours"], labour["source"],
+                labour["work_description"], labour["recorded_by"],
+                labour["autodata_reference"], labour["hourly_rate"],
+                labour["total_price"], labour["net_price"],
+                labour["vat_price"], labour["vat_rate"],
+                labour["currency"], occurred_at, work_id, expected_version,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise VersionConflictError(work_id)
+        return self._insert_event(
+            connection,
+            work_id=work_id,
+            occurred_at=occurred_at,
+            event_type=event_type,
+            actor=labour["recorded_by"],
+            details=details,
+            work_version=expected_version + 1,
+        )
 
     @staticmethod
     def _insert_event(
@@ -334,8 +350,8 @@ class WorkRepository:
         actor: str,
         details: dict[str, Any],
         work_version: int,
-    ) -> None:
-        connection.execute(
+    ) -> int:
+        cursor = connection.execute(
             """
             INSERT INTO work_events (
                 work_id, occurred_at, event_type, actor, details_json, work_version
@@ -350,3 +366,4 @@ class WorkRepository:
                 work_version,
             ),
         )
+        return cursor.lastrowid

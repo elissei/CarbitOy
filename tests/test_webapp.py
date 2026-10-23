@@ -324,7 +324,8 @@ def test_unexpected_pricing_error_is_not_hidden(tmp_path, monkeypatch):
     def programming_error(*args, **kwargs):
         raise RuntimeError("Unexpected programming error")
 
-    monkeypatch.setattr("webapp.main.calculate_labour_cost", programming_error)
+    # 1B-1 moved the snapshot calculation; the propagation contract is unchanged.
+    monkeypatch.setattr("webapp.labour_snapshot.calculate_labour_cost", programming_error)
     with client_for(tmp_path) as client:
         work = client.post("/api/works", json=inquiry_payload()).json()
         with pytest.raises(RuntimeError, match="Unexpected programming error"):
