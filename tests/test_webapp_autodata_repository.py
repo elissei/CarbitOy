@@ -38,7 +38,7 @@ from webapp.autodata_records import (
     LOOKUP_CONTRACT, AcceptLookupCommand, canonical_json, command_digest, contains_vin_like,
 )
 from webapp.autodata_repository import (
-    AlreadyAcceptedError, AlreadyRedactedError, AutodataClosedError, AutodataIntegrityError,
+    AlreadyAcceptedError, AlreadyRedactedError, AutodataClosedError, AutodataDisabledError, AutodataIntegrityError,
     AutodataRepository, ExpiredLookupError, IdentifierInRequestError, IdentifierInSearchTextError,
     InvalidLookupTimeError, LookupNotFoundError, LookupRedactedError, NotAcceptableError,
     RequestRedactedError, StaleLookupError, StaleViewError, SyntheticNotAcceptableError,
@@ -1283,6 +1283,69 @@ def test_acceptance_then_closure_keeps_a_replayable_receipt_behind_current_right
     revoke_membership(env, env.staff)
     with pytest.raises(WorkshopAccessDenied):
         accept(env, lookup, cmd)
+
+
+# -- replay only (disabled Autodata, MAIN decision 24.10.2026) ------------------
+
+def test_replay_only_returns_a_matching_receipt_and_writes_nothing(env):
+    lookup, _ = store(env)
+    cmd = command()
+    first = accept(env, lookup, cmd)
+
+    def replay():
+        before = all_rows(env.db)
+        again = accept(env, lookup, cmd, replay_only=True)
+        assert again["decision"] == first["decision"] and again["replayed"] is True
+        assert all_rows(env.db) == before
+
+    replay()
+    redact(env, lookup)
+    replay()
+    close(env)
+    replay()
+
+
+def test_replay_only_refuses_a_new_acceptance_in_the_same_transaction(env):
+    lookup, _ = store(env)
+    before = all_rows(env.db)
+    with pytest.raises(AutodataDisabledError) as raised:
+        accept(env, lookup, replay_only=True)
+    assert raised.value.code == "AUTODATA_DISABLED" and all_rows(env.db) == before
+    # Decided right after the receipt check: before closure, evidence and synthetic checks.
+    synthetic, _ = store(env, fake_result(synthetic=True))
+    with pytest.raises(AutodataDisabledError):
+        accept(env, synthetic, replay_only=True)
+    with pytest.raises(AutodataDisabledError):
+        accept(env, {"lookup_id": str(uuid4())}, replay_only=True)
+    close(env)
+    with pytest.raises(AutodataDisabledError):
+        accept(env, lookup, replay_only=True)
+
+
+def test_replay_only_defaults_off_for_existing_callers(env):
+    lookup, _ = store(env)
+    assert accept(env, lookup)["replayed"] is False
+
+
+def test_replay_only_keeps_scope_rights_and_conflicts(env):
+    lookup, _ = store(env)
+    cmd = command()
+    accept(env, lookup, cmd)
+    before = all_rows(env.db)
+    with pytest.raises(WorkNotFoundError):
+        accept(env, lookup, cmd, context=second_workshop(env), replay_only=True)
+    reader = test_context("trusted-reader", permissions=frozenset({WorkshopPermission.READ_LABOUR_PLAN}))
+    with pytest.raises(WorkshopAccessDenied):
+        accept(env, lookup, cmd, context=reader, replay_only=True)
+    with pytest.raises(IdempotencyConflictError):
+        accept(env, lookup, command(request_id=cmd.request_id, version=2), replay_only=True)
+    # Only the second workshop's own fixture rows were added.
+    def evidence(rows):
+        return {table: row for table, row in rows.items() if table.startswith("autodata_") or table == "work_events"}
+    assert evidence(all_rows(env.db)) == evidence(before)
+    revoke_membership(env, env.staff)
+    with pytest.raises(WorkshopAccessDenied):
+        accept(env, lookup, cmd, replay_only=True)
 
 
 def test_closure_then_acceptance_creates_nothing(env):

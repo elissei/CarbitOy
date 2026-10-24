@@ -97,6 +97,12 @@ class AlreadyRedactedError(AutodataError):
     code = "ALREADY_REDACTED"
 
 
+class AutodataDisabledError(AutodataError):
+    """Autodata is disabled: only stored lookups and acceptance receipts are replayed."""
+
+    code = "AUTODATA_DISABLED"
+
+
 class AutodataIntegrityError(AutodataError):
     """A payload missing without its redaction event, or rows left by a removal."""
 
@@ -337,11 +343,14 @@ class AutodataRepository:
                 "decided_at": receipt["decided_at"]}
 
     def accept_lookup(self, context, *, inquiry_id: str, lookup_id: str,
-                      command: AcceptLookupCommand, allow_synthetic: bool = False) -> dict:
+                      command: AcceptLookupCommand, allow_synthetic: bool = False,
+                      replay_only: bool = False) -> dict:
         """Decision, labour, event, new version and receipt in ONE transaction (plan 4, 13.3).
 
         One path for new acceptances and retries: authorization (operation) ->
         scope -> receipt -> closure -> body -> payload -> checks -> writes.
+        replay_only (disabled Autodata) returns a matching receipt and refuses
+        everything else with AUTODATA_DISABLED in the same transaction, writing nothing.
         """
         _require_scope(context)
         command = AcceptLookupCommand.model_validate(command.model_dump())
@@ -361,6 +370,8 @@ class AutodataRepository:
                     raise IdempotencyConflictError(command.request_id)
                 return {"decision": self._receipt_response(receipt), "replayed": True,
                         "work": self.work._read_work(connection, inquiry_id, context)}
+            if replay_only:
+                raise AutodataDisabledError()
             # 3. Closure before reading the lookup (a closure deletes it).
             if self._is_closed(connection, inquiry_id):
                 raise AutodataClosedError(inquiry_id)

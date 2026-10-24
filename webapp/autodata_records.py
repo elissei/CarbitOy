@@ -14,10 +14,11 @@ from hashlib import sha256
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from integrations.autodata.models import (
-    ChoiceIdentity, LabourTimeLookupResult, LabourTimeRequest, LookupOutcome,
+    AutodataRecord, ChoiceIdentity, LabourTimeLookupResult, LabourTimeRequest, LookupOutcome,
+    VehicleQuery, WorkQuery,
 )
 from integrations.autodata.time_parser import TimeRejection, parse_labour_time
 from webapp.autodata_migrations import MAX_RESULT_JSON_BYTES
@@ -246,6 +247,65 @@ def split_request(request: LabourTimeRequest) -> tuple[dict, dict]:
         "search_text": request.work_query.search_text,
     }
     return snapshot, inputs
+
+
+class LookupVehicleFacts(AutodataRecord):
+    """Staff-entered refinements; the registration always comes from the inquiry.
+
+    The same limits as VehicleQuery; a registration field is a validation error.
+    """
+
+    vin: str | None = Field(default=None, max_length=17)
+    make: str | None = Field(default=None, max_length=100)
+    model: str | None = Field(default=None, max_length=100)
+    model_year: int | None = Field(default=None, ge=1900, le=2100, strict=True)
+    engine_code: str | None = Field(default=None, max_length=40)
+    fuel: str | None = Field(default=None, max_length=40)
+    power_kw: int | None = Field(default=None, gt=0, le=2000, strict=True)
+    displacement_cc: int | None = Field(default=None, gt=0, le=20000, strict=True)
+
+
+class LookupCommand(AutodataRecord):
+    """Closed client lookup command; command_sha256 covers exactly this body.
+
+    Server values (registration, source version, times) are added only to the
+    adapter request, never to the digest.
+    """
+
+    request_id: str
+    expected_version: int = Field(ge=1, strict=True)
+    vehicle_facts: LookupVehicleFacts
+    work_query: str = Field(min_length=1, max_length=200)
+    vehicle_selection: ChoiceIdentity | None = None
+    operation_selection: ChoiceIdentity | None = None
+    variant_selection: ChoiceIdentity | None = None
+
+    @field_validator("request_id")
+    @classmethod
+    def validate_request_id(cls, value: str) -> str:
+        return canonical_uuid(value)
+
+    @model_validator(mode="after")
+    def require_selection_order(self) -> "LookupCommand":
+        if self.operation_selection is not None and self.vehicle_selection is None:
+            raise ValueError("an operation selection requires a vehicle selection")
+        if self.variant_selection is not None and self.operation_selection is None:
+            raise ValueError("a variant selection requires an operation selection")
+        return self
+
+    def command_sha256(self, *, actor_user_id: str, inquiry_id: str) -> str:
+        return command_digest(LOOKUP_CONTRACT, actor_user_id=actor_user_id, inquiry_id=inquiry_id,
+                              body=self.model_dump(mode="json"))
+
+    def adapter_request(self, *, registration: str) -> LabourTimeRequest:
+        """The server-completed request; registration read from the inquiry."""
+        return LabourTimeRequest(
+            vehicle_query=VehicleQuery(registration=registration,
+                                       **self.vehicle_facts.model_dump()),
+            work_query=WorkQuery(search_text=self.work_query),
+            vehicle_selection=self.vehicle_selection, operation_selection=self.operation_selection,
+            variant_selection=self.variant_selection,
+        )
 
 
 class AcceptLookupCommand(BaseModel):
