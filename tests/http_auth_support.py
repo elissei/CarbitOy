@@ -41,10 +41,11 @@ def settings_for(database_path, origin="https://testserver"):
     )
 
 
-def create_test_app(database_path=None, *, auth_settings=None):
+def create_test_app(database_path=None, *, auth_settings=None, autodata_settings=None, autodata_runner=None):
     assert database_path is not None
     repository = ScopedTestRepository(database_path)
-    app = create_app(database_path, auth_settings=auth_settings or settings_for(str(database_path) + ".auth.db"))
+    app = create_app(database_path, auth_settings=auth_settings or settings_for(str(database_path) + ".auth.db"),
+                     autodata_settings=autodata_settings, autodata_runner=autodata_runner)
     production_lifespan = app.router.lifespan_context
 
     @asynccontextmanager

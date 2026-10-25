@@ -631,6 +631,8 @@ def test_only_approved_auth_routes_and_no_recovery_or_business_context_bridge(tm
         "/api/works", "/api/works/{work_id}", "/api/works/{work_id}/labour",
         "/api/auth/csrf", "/api/auth/login", "/api/auth/mfa", "/api/auth/session", "/api/auth/logout",
         "/api/drafts", "/api/drafts/{draft_id}", "/api/drafts/{draft_id}/discard",
+        "/api/works/{work_id}/autodata/lookups", "/api/works/{work_id}/autodata/lookups/{lookup_id}",
+        "/api/works/{work_id}/autodata/lookups/{lookup_id}/accept", "/api/works/{work_id}/autodata/decisions",
     }
     with TestClient(app, base_url="https://testserver") as http:
         assert http.post("/api/auth/login").status_code == 403

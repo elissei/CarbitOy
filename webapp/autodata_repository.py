@@ -212,6 +212,8 @@ class AutodataRepository:
             "synthetic": bool(body["synthetic"]),
             "adapter_name": body["adapter_name"], "adapter_version": body["adapter_version"],
             "requested_by_attribution": json.loads(body["requested_by_attribution_json"]),
+            # Actor bound to its auth store; the HTTP projection removes both (1B-3, MAIN D9).
+            "requested_by": body["requested_by"], "auth_store_id": body["auth_store_id"],
             "redacted": payload is None,
             "raw_time_text": payload["raw_time_text"] if payload is not None else None,
             "result": json.loads(payload["result_json"]) if payload is not None else None,
@@ -610,6 +612,7 @@ class AutodataRepository:
                 "resulting_work_version": row["resulting_work_version"],
                 "lookup_retrieved_at": row["lookup_retrieved_at"],
                 "decided_at": row["decided_at"], "decided_by": row["decided_by"],
+                "auth_store_id": row["auth_store_id"],
                 "decided_by_attribution": json.loads(row["decided_by_attribution_json"]),
                 "redacted": row["result_json"] is None,
                 "labels": _labels(json.loads(row["result_json"])) if row["result_json"] is not None else None,

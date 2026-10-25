@@ -25,8 +25,12 @@ from webapp.auth_csrf import CsrfProtector, SESSION_COOKIE
 from webapp.auth_repository import AuthRepository
 from webapp.auth_service import AuthService, AuthenticationError, PermissionDeniedError
 from webapp.auth_settings import AuthSettings
+from webapp.autodata_repository import AutodataRepository
+from webapp.autodata_service import AutodataAcceptanceService, AutodataLookupService
+from webapp.autodata_settings import AutodataSettings, require_single_process
 from webapp.http_access import HttpAccessGate, validate_route_coverage
 from webapp.http_auth import register_auth_routes
+from webapp.http_autodata import register_autodata_routes
 from webapp.http_drafts import register_draft_routes
 from webapp.draft_settings import DraftApiSettings
 from webapp.draft_repository import DraftRepository
@@ -115,6 +119,7 @@ def _business_context(request: Request, permission=WorkshopPermission.SAVE_LABOU
 def create_app(
     database_path: str | Path | None = None, *, auth_settings: AuthSettings | None = None,
     draft_settings: DraftApiSettings | None = None,
+    autodata_settings: AutodataSettings | None = None, autodata_runner=None,
 ) -> FastAPI:
     selected_path = Path(
         database_path or os.environ.get("CARBIT_DATABASE", DEFAULT_DATABASE)
@@ -128,6 +133,19 @@ def create_app(
         drafts = draft_settings if draft_settings is not None else DraftApiSettings.from_environment()
         if not isinstance(drafts,DraftApiSettings):
             raise TypeError('server draft settings required')
+        # Every Autodata setting and the runner are checked before either database
+        # is initialized (MAIN D5): only explicit test settings enable the fake.
+        autodata = AutodataSettings.from_environment() if autodata_settings is None else autodata_settings
+        if type(autodata) is not AutodataSettings:
+            raise TypeError("server autodata settings required")
+        require_single_process(autodata)
+        if not autodata.enabled and autodata_runner is not None:
+            raise ValueError("a disabled autodata mode takes no lookup runner")
+        # The constructors open no database; the lookup service refuses a wrong
+        # runner class, adapter class or identity here, still before initialize().
+        autodata_repository = AutodataRepository(application.state.repository)
+        autodata_lookups = AutodataLookupService(autodata_repository, autodata, autodata_runner)
+        autodata_acceptance = AutodataAcceptanceService(autodata_repository, autodata)
         if (settings.database_path.resolve() == selected_path.resolve()
                 or (settings.database_path.exists() and selected_path.exists()
                     and settings.database_path.samefile(selected_path))):
@@ -149,6 +167,10 @@ def create_app(
         application.state.draft_service = (
             DraftService(DraftRepository(repository,keyring=drafts.keyring)) if drafts.enabled else None
         )
+        application.state.autodata_settings = autodata
+        application.state.autodata_repository = autodata_repository
+        application.state.autodata_lookups = autodata_lookups
+        application.state.autodata_acceptance = autodata_acceptance
         yield
 
     app = FastAPI(
@@ -186,6 +208,7 @@ def create_app(
 
     register_auth_routes(app)
     register_draft_routes(app,_business_context)
+    register_autodata_routes(app, _business_context)
     app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
     login_headers = {

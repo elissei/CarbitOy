@@ -25,6 +25,13 @@ from webapp.autodata_migrations import MAX_RESULT_JSON_BYTES
 
 
 LOOKUP_CONTRACT = "carbit.autodata.lookup.authenticated.v1"
+# Choice limits (1B-3, MAIN D4): the same bounds apply to a staff selection and
+# to every choice of a stored result, so a stored choice can always be replayed.
+MAX_SELECTION_LABELS = 8
+MAX_LABEL_CHARACTERS = 200
+MAX_SOURCE_ID_CHARACTERS = 100
+MAX_CANDIDATES = 50
+MAX_EXPECTED_VERSION = 2**63 - 1
 _VIN_LIKE = re.compile(r"[A-HJ-NPR-Z0-9]{17}")
 _SEPARATORS = re.compile(r"[\s\-]+")
 _TOKEN_SPLIT = re.compile(r"[^A-Z0-9]+")
@@ -148,10 +155,19 @@ def snapshot_has_identifier(snapshot: dict, *, registration: str, vin: str | Non
                for text in _snapshot_texts(snapshot))
 
 
+def identity_within_limits(identity: ChoiceIdentity) -> bool:
+    return (len(identity.selection_path) <= MAX_SELECTION_LABELS
+            and all(len(label) <= MAX_LABEL_CHARACTERS for label in identity.selection_path)
+            and (identity.source_id is None or len(identity.source_id) <= MAX_SOURCE_ID_CHARACTERS))
+
+
+def _result_choices(result: LabourTimeLookupResult) -> list:
+    return [resolved.choice for resolved in (result.vehicle, result.operation, result.variant)
+            if resolved is not None] + list(result.candidates)
+
+
 def _result_texts(result: LabourTimeLookupResult):
-    choices = [resolved.choice for resolved in (result.vehicle, result.operation, result.variant)
-               if resolved is not None] + list(result.candidates)
-    for choice in choices:
+    for choice in _result_choices(result):
         yield from choice.identity.selection_path
         yield from choice.details
         if choice.identity.source_id is not None:
@@ -167,12 +183,17 @@ def minimise_result(result: LabourTimeLookupResult, *, registration: str,
     """Never store source labels echoing the vehicle's identifiers, nor oversize results.
 
     Such a result becomes SITE_CHANGED without choices or time; masking would
-    break the identity that a later selection must replay.
+    break the identity that a later selection must replay. The same holds for
+    more than MAX_CANDIDATES candidates or a choice beyond the selection limits:
+    staff could not replay it, and no candidate is silently dropped. This runs
+    before any stored JSON or digest is formed, so the rejected text is kept nowhere.
     """
     leaked = any(search_text_has_identifier(text, registration=registration, vin=vin)
                  for text in _result_texts(result))
     oversize = len(canonical_json(result.model_dump(mode="json")).encode("utf-8")) > MAX_RESULT_JSON_BYTES
-    if leaked or oversize:
+    unreplayable = (len(result.candidates) > MAX_CANDIDATES
+                    or not all(identity_within_limits(choice.identity) for choice in _result_choices(result)))
+    if leaked or oversize or unreplayable:
         return _site_changed(result)
     return result
 
@@ -273,7 +294,7 @@ class LookupCommand(AutodataRecord):
     """
 
     request_id: str
-    expected_version: int = Field(ge=1, strict=True)
+    expected_version: int = Field(ge=1, le=MAX_EXPECTED_VERSION, strict=True)
     vehicle_facts: LookupVehicleFacts
     work_query: str = Field(min_length=1, max_length=200)
     vehicle_selection: ChoiceIdentity | None = None
@@ -291,6 +312,9 @@ class LookupCommand(AutodataRecord):
             raise ValueError("an operation selection requires a vehicle selection")
         if self.variant_selection is not None and self.operation_selection is None:
             raise ValueError("a variant selection requires an operation selection")
+        for selection in (self.vehicle_selection, self.operation_selection, self.variant_selection):
+            if selection is not None and not identity_within_limits(selection):
+                raise ValueError("a selection exceeds the choice limits")
         return self
 
     def command_sha256(self, *, actor_user_id: str, inquiry_id: str) -> str:
@@ -318,7 +342,7 @@ class AcceptLookupCommand(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     request_id: str
-    expected_version: int = Field(ge=1, strict=True)
+    expected_version: int = Field(ge=1, le=MAX_EXPECTED_VERSION, strict=True)
     confirmation: Literal["VEHICLE_OPERATION_VARIANT_TIME"]
 
     @field_validator("request_id")

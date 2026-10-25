@@ -33,12 +33,16 @@ from webapp.autodata_migrations import CLOSE_CONFIRMATION
 from webapp.autodata_records import AcceptLookupCommand, LookupCommand
 from webapp.autodata_repository import (
     AutodataClosedError, AutodataRepository, IdentifierInRequestError, IdentifierInSearchTextError,
-    RequestRedactedError, StaleViewError, SyntheticNotAcceptableError,
+    NotAcceptableError, RequestRedactedError, StaleViewError, SyntheticNotAcceptableError,
 )
+from webapp import autodata_service
 from webapp.autodata_service import (
-    AutodataAcceptanceService, AutodataDisabledError, AutodataLookupService, LookupBusyError,
+    AutodataAcceptanceService, AutodataDisabledError, AutodataLookupService, LookupBusyError, LookupQuota,
+    LookupRateLimitedError,
 )
-from webapp.autodata_settings import AutodataConfigurationError, AutodataMode, AutodataSettings
+from webapp.autodata_settings import (
+    AutodataConfigurationError, AutodataMode, AutodataSettings, require_single_process,
+)
 from webapp.database import IdempotencyConflictError, WorkNotFoundError
 from webapp.workshop_context import TrustedWorkshopContext, WorkshopAccessDenied, WorkshopPermission
 from webapp.workshop_identity import resolve_workshop_context
@@ -57,6 +61,18 @@ SECRET = "Keksitty sivuteksti https://example.invalid/?evaste=salainen"
 TABLES = ("autodata_lookups", "autodata_lookup_payloads", "autodata_labour_decisions",
           "autodata_decision_receipts", "autodata_redaction_events", "autodata_inquiry_closures",
           "work_events")
+WORKSHOP_KEY = (TEST_ORGANIZATION, TEST_WORKSHOP)
+
+
+@pytest.fixture(autouse=True)
+def quota(monkeypatch):
+    """A fresh process quota per test function (MAIN D2 test isolation).
+
+    Only this fixture replaces it: building a service, a lifespan or a call never resets it.
+    """
+    fresh = LookupQuota()
+    monkeypatch.setattr(autodata_service, "PROCESS_LOOKUP_QUOTA", fresh)
+    return fresh
 
 
 def choice(*path):
@@ -565,13 +581,15 @@ def _registration_rejected_by_the_request_model(env):
     _stale, _closed, _identifier_in_search_text, _identifier_in_snapshot, _store_fails,
     _membership_revoked_during_call, _closed_during_call, _registration_rejected_by_the_request_model,
 ])
-def test_every_failure_stores_nothing_and_releases_the_lock(env, case):
+def test_every_failure_stores_nothing_and_releases_the_lock(env, quota, case):
     env.cleanup = None
     command, error, adapter_calls = case(env)
     before = counts(env)
     with pytest.raises(error):
         run_lookup(env, command)
     assert env.adapter.calls == adapter_calls
+    # A start is spent exactly when the adapter was called, and never refunded.
+    assert quota.used(WORKSHOP_KEY) == adapter_calls
     after = counts(env)
     if case is _closed_during_call:
         # Only the closure itself was written, by the action inside the adapter call.
@@ -837,3 +855,247 @@ def test_session_revoked_during_the_adapter_call_stores_nothing(bound):
         run_lookup(bound)
     assert counts(bound) == before and bound.adapter.calls == 1
     assert_lock_free(bound.lock)
+
+
+# -- quota (1B-3, MAIN D2) --------------------------------------------------------
+
+class Ticks:
+    """A monotonic test clock in seconds."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_quota_counts_a_start_while_less_than_an_hour_old_and_computes_retry_after():
+    ticks = Ticks()
+    quota = LookupQuota(monotonic=ticks)
+    assert (quota.limit, quota.window_seconds) == (60, 3600)
+    for second in range(60):
+        ticks.now = float(second)
+        quota.consume(WORKSHOP_KEY)
+    ticks.now = 1800.0
+    with pytest.raises(LookupRateLimitedError) as raised:
+        quota.consume(WORKSHOP_KEY)
+    assert (raised.value.code, raised.value.retry_after) == ("LOOKUP_RATE_LIMITED", 1800)
+    ticks.now = 3599.999999
+    with pytest.raises(LookupRateLimitedError) as raised:
+        quota.consume(WORKSHOP_KEY)
+    assert raised.value.retry_after == 1
+    # A refused start is not recorded.
+    assert quota.used(WORKSHOP_KEY) == 60
+    ticks.now = 3600.0
+    quota.consume(WORKSHOP_KEY)  # the start at 0 left the window exactly now
+    assert quota.used(WORKSHOP_KEY) == 60
+    with pytest.raises(LookupRateLimitedError) as raised:
+        quota.consume(WORKSHOP_KEY)
+    assert raised.value.retry_after == 1
+
+
+def test_quota_keys_are_separate_workshops():
+    quota = LookupQuota(limit=1)
+    quota.consume(WORKSHOP_KEY)
+    quota.consume((TEST_ORGANIZATION, "other-workshop"))
+    with pytest.raises(LookupRateLimitedError):
+        quota.consume(WORKSHOP_KEY)
+
+
+@pytest.mark.parametrize("kwargs", [{"limit": 0}, {"limit": True}, {"limit": 1.0}, {"window_seconds": 0},
+                                    {"window_seconds": 1.5}])
+def test_quota_parameters_are_validated(kwargs):
+    with pytest.raises(ValueError):
+        LookupQuota(**kwargs)
+
+
+def test_quota_key_is_the_server_workshop_scope():
+    assert autodata_service._quota_key(test_context()) == WORKSHOP_KEY
+    for scope in ({"organization_id": None, "workshop_id": TEST_WORKSHOP},
+                  {"organization_id": TEST_ORGANIZATION, "workshop_id": None}):
+        with pytest.raises(PermissionError):
+            autodata_service._quota_key(SimpleNamespace(**scope))
+
+
+def fill(quota, count):
+    for _ in range(count):
+        quota.consume(WORKSHOP_KEY)
+
+
+def test_the_sixty_first_start_is_refused_before_the_adapter(env, quota):
+    fill(quota, 59)
+    assert run_lookup(env)["lookup"]["outcome"] == "FOUND"
+    assert quota.used(WORKSHOP_KEY) == 60 and env.adapter.calls == 1
+    before = unchanged(env)
+    with pytest.raises(LookupRateLimitedError) as raised:
+        run_lookup(env)
+    assert raised.value.retry_after >= 1
+    assert env.adapter.calls == 1 and unchanged(env) == before and quota.used(WORKSHOP_KEY) == 60
+    assert_lock_free(env.lock)
+
+
+def test_replay_and_disabled_take_precedence_over_a_full_quota(env, quota):
+    command = lookup_command()
+    stored = run_lookup(env, command)
+    fill(quota, 59)
+    assert run_lookup(env, command) == {"lookup": stored["lookup"], "replayed": True}
+    lookups, _ = disabled(env)
+    assert lookups.lookup(env.staff, inquiry_id=env.inquiry["id"], command=command)["replayed"] is True
+    with pytest.raises(AutodataDisabledError):
+        lookups.lookup(env.staff, inquiry_id=env.inquiry["id"], command=lookup_command())
+    assert quota.used(WORKSHOP_KEY) == 60 and env.adapter.calls == 1
+
+
+def test_a_busy_lookup_spends_no_start(env, quota):
+    assert env.lock.acquire(blocking=False)
+    try:
+        with pytest.raises(LookupBusyError):
+            run_lookup(env)
+    finally:
+        env.lock.release()
+    assert quota.used(WORKSHOP_KEY) == 0
+
+
+def test_adapter_exception_and_timeout_keep_their_spent_start(env, quota):
+    def fail(request):
+        raise RuntimeError(SECRET)
+
+    env.adapter.during = fail
+    assert run_lookup(env)["lookup"]["outcome"] == "ERROR"
+    env.adapter.during = lambda request: setattr(env.clock, "ticks", env.clock.ticks + env.runner.timeout_seconds + 1)
+    assert run_lookup(env)["lookup"]["outcome"] == "TIMEOUT"
+    assert quota.used(WORKSHOP_KEY) == 2 and env.adapter.calls == 2
+
+
+def test_redaction_and_closure_leave_the_quota_unchanged(env, quota):
+    lookup = run_lookup(env)["lookup"]
+    env.repository.redact_lookup(env.staff, inquiry_id=env.inquiry["id"], lookup_id=lookup["lookup_id"],
+                                 reason_code="ENTERED_IN_ERROR")
+    assert quota.used(WORKSHOP_KEY) == 1
+    close(env)
+    assert quota.used(WORKSHOP_KEY) == 1
+
+
+def test_separately_built_services_share_the_one_quota(env, quota):
+    first = env.service
+    second = AutodataLookupService(AutodataRepository(env.work, clock=env.clock), ENABLED,
+                                   LookupRunner(counting_fake(env.clock), FAKE, clock=env.clock,
+                                                monotonic=env.clock.monotonic))
+    assert first is not second
+    run_lookup(env, service=first)
+    run_lookup(env, service=second)
+    # Building a service never resets the quota either.
+    build(env.work, env.clock, env.staff)
+    assert quota.used(WORKSHOP_KEY) == 2
+    fill(quota, 58)
+    for service in (first, second):
+        with pytest.raises(LookupRateLimitedError):
+            run_lookup(env, service=service)
+    assert quota.used(WORKSHOP_KEY) == 60
+
+
+def test_another_workshop_has_its_own_quota(env, quota):
+    fill(quota, 60)
+    foreign = second_workshop(env)
+    inquiry = env.work.create_work(registration="GHI-789", customer_description="Vieras korjaamo",
+                                   actor="Testikirjaaja", idempotency_key=str(uuid4()), context=foreign)
+    assert run_lookup(env, context=foreign, inquiry_id=inquiry["id"])["lookup"]["outcome"] == "FOUND"
+    assert quota.used((TEST_ORGANIZATION, foreign.workshop_id)) == 1 and quota.used(WORKSHOP_KEY) == 60
+
+
+# -- single process check (MAIN D3) -------------------------------------------------
+
+def test_single_process_check_refuses_an_enabled_mode_in_a_worker_child(monkeypatch):
+    monkeypatch.delenv("WEB_CONCURRENCY", raising=False)
+    require_single_process(ENABLED)
+    monkeypatch.setattr("multiprocessing.parent_process", lambda: object())
+    with pytest.raises(AutodataConfigurationError):
+        require_single_process(ENABLED)
+    require_single_process(DISABLED)
+
+
+@pytest.mark.parametrize("value,refused", [("1", False), ("2", True), ("", True), ("4", True)])
+def test_single_process_check_reads_web_concurrency(monkeypatch, value, refused):
+    monkeypatch.setenv("WEB_CONCURRENCY", value)
+    if refused:
+        with pytest.raises(AutodataConfigurationError):
+            require_single_process(ENABLED)
+    else:
+        require_single_process(ENABLED)
+    require_single_process(DISABLED)
+
+
+# -- command and result limits (MAIN D4, D9) ------------------------------------------
+
+def selection(*, labels=1, length=10, source_id=None):
+    return {"selection_path": ["V" + "a" * (length - 1)] * labels, "source_id": source_id}
+
+
+@pytest.mark.parametrize("change,valid", [
+    ({"vehicle_selection": selection(labels=8, length=200, source_id="s" * 100)}, True),
+    ({"vehicle_selection": selection(labels=9)}, False),
+    ({"vehicle_selection": selection(length=201)}, False),
+    ({"vehicle_selection": selection(source_id="s" * 101)}, False),
+    ({"expected_version": 2**63 - 1}, True),
+    ({"expected_version": 2**63}, False),
+])
+def test_lookup_command_choice_and_version_limits(change, valid):
+    body = {**lookup_command().model_dump(mode="json"), **change}
+    if valid:
+        assert LookupCommand.model_validate(body).model_dump(mode="json") == body
+    else:
+        with pytest.raises(ValidationError):
+            LookupCommand.model_validate(body)
+
+
+def test_accept_command_version_limit():
+    AcceptLookupCommand(request_id=str(uuid4()), expected_version=2**63 - 1, confirmation=CONFIRM)
+    with pytest.raises(ValidationError):
+        AcceptLookupCommand(request_id=str(uuid4()), expected_version=2**63, confirmation=CONFIRM)
+
+
+def vehicles(count, *, label="Testimerkki"):
+    return tuple(FakeVehicle(choice=choice(f"{label} {index}"), operations=VEHICLE.operations)
+                 for index in range(count))
+
+
+def with_fake(env, fleet):
+    runner = LookupRunner(FakeAutodataLabourAdapter(fleet, clock=env.clock), FAKE, clock=env.clock,
+                          monotonic=env.clock.monotonic)
+    return AutodataLookupService(env.repository, ALLOW_SYNTHETIC, runner)
+
+
+def test_fifty_candidates_are_kept_and_fifty_one_become_site_changed(env):
+    kept = run_lookup(env, service=with_fake(env, vehicles(50)))["lookup"]
+    assert (kept["outcome"], kept["candidate_count"]) == ("VEHICLE_AMBIGUOUS", 50)
+    dropped = run_lookup(env, service=with_fake(env, vehicles(51, label="Ylimerkki")))["lookup"]
+    assert (dropped["outcome"], dropped["candidate_count"], dropped["level"]) == ("SITE_CHANGED", 0, None)
+    assert dropped["result"]["candidates"] == []
+    assert "Ylimerkki" not in database_text(env.db)
+
+
+@pytest.mark.parametrize("identity", [
+    ChoiceIdentity(selection_path=("HYLATTYNIMIO " + "x" * 188,)),
+    ChoiceIdentity(selection_path=tuple(f"HYLATTYNIMIO {index}" for index in range(9))),
+    ChoiceIdentity(selection_path=("Testimerkki",), source_id="HYLATTYNIMIO" + "s" * 89),
+])
+def test_a_result_beyond_the_choice_limits_is_site_changed_before_storage(env, identity):
+    fleet = (FakeVehicle(choice=Choice(identity=identity), operations=VEHICLE.operations),)
+    lookup = run_lookup(env, service=with_fake(env, fleet))["lookup"]
+    assert (lookup["outcome"], lookup["candidate_count"], lookup["hours"]) == ("SITE_CHANGED", 0, None)
+    assert lookup["result"]["outcome"] == "SITE_CHANGED"
+    assert lookup["result"]["vehicle"] is None and lookup["result"]["candidates"] == []
+    # Neither the body, the payload, the digests' inputs nor any event keep the rejected text.
+    assert "HYLATTYNIMIO" not in database_text(env.db)
+    with pytest.raises(NotAcceptableError):
+        AutodataAcceptanceService(env.repository, ALLOW_SYNTHETIC).accept(
+            env.staff, inquiry_id=env.inquiry["id"], lookup_id=lookup["lookup_id"], command=accept_command())
+
+
+def test_lookup_record_binds_the_actor_to_its_auth_store(env):
+    record = run_lookup(env)["lookup"]
+    assert (record["requested_by"], record["auth_store_id"]) == (env.staff.employee_id, env.staff.auth_store_id)
+    AutodataAcceptanceService(env.repository, ALLOW_SYNTHETIC).accept(
+        env.staff, inquiry_id=env.inquiry["id"], lookup_id=record["lookup_id"], command=accept_command())
+    item = env.repository.list_decisions(env.staff, inquiry_id=env.inquiry["id"])["items"][0]
+    assert (item["decided_by"], item["auth_store_id"]) == (env.staff.employee_id, env.staff.auth_store_id)

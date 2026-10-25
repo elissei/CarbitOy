@@ -3,10 +3,11 @@
 The environment can only select the disabled mode. The fake mode exists for
 explicitly constructed test settings, and the browser mode is rejected until
 a real adapter (1C) exists. One lookup runs at a time per process, so an
-enabled mode requires exactly one declared server worker; the actual worker
-count is checked when the service is wired (1B-3).
+enabled mode requires exactly one declared server worker; require_single_process
+checks the actual process when the application starts (1B-3).
 """
 
+import multiprocessing
 import os
 from dataclasses import dataclass
 from enum import Enum
@@ -52,3 +53,18 @@ class AutodataSettings:
             # fake: explicit test settings only; browser: no real adapter yet.
             raise AutodataConfigurationError("CARBIT_AUTODATA_MODE must be 'disabled'")
         return cls()
+
+
+def require_single_process(settings: AutodataSettings) -> None:
+    """Refuse an enabled mode in a uvicorn worker or reload child (MAIN D3).
+
+    uvicorn 0.54 runs --workers > 1 and --reload in multiprocessing spawn
+    children and reads WEB_CONCURRENCY as its default worker count. Accepted
+    for the synthetic phase only: separately started processes or other
+    process managers are not detected, so this is no general guarantee.
+    """
+    if not settings.enabled:
+        return
+    if (multiprocessing.parent_process() is not None
+            or os.environ.get("WEB_CONCURRENCY", "1") != "1"):
+        raise AutodataConfigurationError("autodata lookups require exactly one server process")
