@@ -12,6 +12,11 @@ const labourForm = document.querySelector("#labour-form");
 const inquiryDrafts = CarbitInquiryDrafts({
   api, form: newForm, dialog, workBusy: () => state.createPending
 });
+const autodata = CarbitAutodata({
+  api, canWrite: () => CarbitAuth.canWrite(),
+  current: () => ({ work: state.selected, selectionEpoch: state.selectionEpoch }),
+  onWorkUpdated, toast: showToast
+});
 const moneyFormatter = new Intl.NumberFormat("fi-FI", {
   style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2
 });
@@ -61,6 +66,7 @@ let draftDialogOpen = false;
 function lockBusiness() {
   forgetSessionCsrf();
   inquiryDrafts.lock();
+  autodata.lock();
   state.selectionEpoch += 1;
   state.listEpoch += 1;
   draftDialogOpen ||= dialog.open;
@@ -76,6 +82,9 @@ function discardBusiness() {
   draftDialogOpen = false;
   newForm.reset(); labourForm.reset();
   inquiryDrafts.discard();
+  autodata.discard();
+  delete labourForm.dataset.dirtyWork;
+  document.querySelector("#labour-notice").textContent = "";
   list.replaceChildren(); count.textContent = "";
   for (const id of ["detail-registration", "detail-description", "detail-created", "price-summary", "event-list", "session-user", "toast", "new-work-error", "labour-error"]) {
     document.getElementById(id).replaceChildren();
@@ -92,6 +101,7 @@ async function confirmBusiness(user, sameOwner) {
   Array.from(labourForm.elements).forEach(control => { control.disabled = !writer; });
   labourForm.querySelector("button[type=submit]").disabled = !writer || state.labourPending;
   inquiryDrafts.render();
+  autodata.confirm(writer, sameOwner);
   const shell = document.querySelector("#business-shell");
   shell.hidden = false; shell.inert = false;
   if (sameOwner) {
@@ -156,35 +166,70 @@ async function sessionProof() {
 }
 
 async function api(path, options = {}) {
-  if (!CarbitAuth.active()) throw new Error("Kirjautuminen on vanhentunut. Kirjaudu uudelleen.");
-  const authEpoch = CarbitAuth.epoch();
-  const requestStartedAt = Date.now();
-  const method = (options.method || "GET").toUpperCase();
-  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-  if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
-    if (!CarbitAuth.canWrite()) throw new Error("Käyttöoikeus ei riitä. Näkymä on vain lukua varten.");
-    headers["X-CSRF-Token"] = await sessionProof();
-  }
-  if (authEpoch !== CarbitAuth.epoch() || !CarbitAuth.active()) throw new Error("Kirjautumistila muuttui. Tarkista tila.");
-  const response = await fetch(path, {
-    ...options,
-    credentials: "same-origin", headers
-  });
-  if (authEpoch !== CarbitAuth.epoch() || !CarbitAuth.active()) throw new Error("Kirjautumistila muuttui. Tarkista tila.");
+  // Mark only transport stages. Rendering and local programming errors remain
+  // ordinary errors; Autodata must not describe them as uncertain writes.
+  const mark = (problem, outcome) => Object.assign(problem, { outcome });
+  // Only Autodata supplies this guard. Other callers retain their auth policy.
+  const { autodataGuard, ...requestOptions } = options;
+  const checkContext = (outcome) => {
+    if (autodataGuard && !autodataGuard()) {
+      throw mark(new Error("Autodata-operaation kirjautumiskonteksti muuttui."), outcome);
+    }
+  };
+  let authEpoch, requestStartedAt, headers;
+  try {
+    checkContext("unsent");
+    if (!CarbitAuth.active()) throw new Error("Kirjautuminen on vanhentunut. Kirjaudu uudelleen.");
+    authEpoch = CarbitAuth.epoch();
+    requestStartedAt = Date.now();
+    const method = (options.method || "GET").toUpperCase();
+    headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+      if (!CarbitAuth.canWrite()) throw new Error("Käyttöoikeus ei riitä. Näkymä on vain lukua varten.");
+      headers["X-CSRF-Token"] = await sessionProof();
+    }
+    checkContext("unsent");
+    if (authEpoch !== CarbitAuth.epoch() || !CarbitAuth.active()) throw new Error("Kirjautumistila muuttui. Tarkista tila.");
+  } catch (problem) { throw mark(problem, "unsent"); }
+
+  let response;
+  try {
+    response = await fetch(path, { ...requestOptions, credentials: "same-origin", headers });
+  } catch (problem) { throw mark(problem, "unconfirmed"); }
+  const checkAbort = () => {
+    if (options.signal?.aborted) throw mark(new DOMException("Pyyntö peruutettiin.", "AbortError"), "unconfirmed");
+  };
+  const checkEpoch = () => {
+    checkContext("unconfirmed");
+    checkAbort();
+    if (authEpoch !== CarbitAuth.epoch() || !CarbitAuth.active()) {
+      throw mark(new Error("Kirjautumistila muuttui. Tarkista tila."), "unconfirmed");
+    }
+  };
+  checkEpoch();
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) forgetSessionCsrf();
     const body = await response.json().catch(() => ({}));
-    if (authEpoch !== CarbitAuth.epoch()) throw new Error("Kirjautumistila muuttui. Tarkista tila.");
+    checkContext("unconfirmed");
+    checkAbort();
+    if (authEpoch !== CarbitAuth.epoch()) {
+      throw mark(new Error("Kirjautumistila muuttui. Tarkista tila."), "unconfirmed");
+    }
     if (response.status === 401) CarbitAuth.lock();
-    if (response.status === 403 && body.detail === "Permission denied") {
+    if (response.status === 403 && body?.detail === "Permission denied") {
       CarbitAuth.lock("denied", "Käyttöoikeus ei riitä. Tarkista nykyinen kirjautumistila.");
     }
-    const problem = new Error(formatApiError(body.detail));
+    const problem = new Error(formatApiError(body?.detail));
     problem.status = response.status;
-    throw problem;
+    if (body && typeof body === "object" && !Array.isArray(body)
+        && typeof body.code === "string" && /^[A-Z_]{1,40}$/.test(body.code)) problem.code = body.code;
+    problem.retryAfter = response.headers.get("Retry-After");
+    throw mark(problem, "http");
   }
-  const body = await response.json();
-  if (authEpoch !== CarbitAuth.epoch() || !CarbitAuth.active()) throw new Error("Kirjautumistila muuttui. Tarkista tila.");
+  let body;
+  try { body = await response.json(); }
+  catch (problem) { throw mark(problem, "unconfirmed"); }
+  checkEpoch();
   CarbitAuth.activity(requestStartedAt);
   return body;
 }
@@ -217,21 +262,73 @@ function renderList() {
   }));
 }
 
+function labourConflict(work) {
+  const notice = document.querySelector("#labour-notice");
+  notice.textContent = `Lomake on tehty versiolle ${labourForm.dataset.version || "?"}; tiedustelu on nyt versiossa ${work.version} (${work.labour_hours || "?"} h, ${work.labour_source || "käsin"}). Tallennusta ei lähetetä. Palauta tallennettuun ja kirjaa uudelleen.`;
+}
+
+function fillLabourForm(work) {
+  if (labourForm.dataset.dirtyWork === work.id) {
+    if (Number(labourForm.dataset.version) !== work.version) labourConflict(work);
+    return;
+  }
+  labourForm.dataset.workId = work.id;
+  labourForm.dataset.version = String(work.version);
+  const manual = work.labour_source !== "AUTODATA";
+  labourForm.elements.hours.value = manual ? work.labour_hours || "" : "";
+  labourForm.elements.work_description.value = manual ? work.labour_work_description || "" : "";
+  labourForm.elements.autodata_reference.value = manual ? work.autodata_reference || "" : "";
+  document.querySelector("#labour-notice").textContent = manual ? "" : "Manuaalinen kirjaus korvaa nykyisen Autodata-ajan";
+}
+
+function onWorkUpdated(work, decision = null) {
+  // Called only for a confirmed response to this tab's retained accept command,
+  // or an explicit GET refresh (without a decision).
+  const raw = labourForm.dataset.version;
+  const formVersion = Number(raw);
+  const resulting = decision?.resulting_work_version;
+  if (labourForm.dataset.dirtyWork === work.id && decision) {
+    if (typeof raw === "string" && /^[1-9][0-9]*$/.test(raw)
+        && Number.isSafeInteger(formVersion) && formVersion >= 1
+        && Number.isSafeInteger(resulting) && resulting >= 2
+        && Number.isSafeInteger(work.version)
+        && formVersion === resulting - 1 && work.version === resulting) {
+      labourForm.dataset.version = String(resulting);
+      document.querySelector("#labour-notice").textContent = "Autodata-aika hyväksyttiin. Lähettämättömät arvosi säilyivät. Tallennus korvaa hyväksytyn Autodata-ajan.";
+    } else labourConflict(work);
+  }
+  state.selected = work;
+  renderDetail();
+  renderList();
+}
+
+labourForm.addEventListener("input", () => {
+  if (state.selected) labourForm.dataset.dirtyWork = state.selected.id;
+});
+document.querySelector("#labour-reset").addEventListener("click", () => {
+  if (!state.selected || !CarbitAuth.canWrite()) return;
+  delete labourForm.dataset.dirtyWork;
+  fillLabourForm(state.selected);
+});
+
 function renderDetail() {
   const work = state.selected;
   empty.classList.toggle("hidden", Boolean(work));
   detail.classList.toggle("hidden", !work);
   document.querySelector("#labour-error").classList.add("hidden");
-  labourForm.dataset.workId = work?.id || "";
-  labourForm.dataset.version = work?.version || "";
+  if (!work) {
+    labourForm.dataset.workId = "";
+    labourForm.dataset.version = "";
+    delete labourForm.dataset.dirtyWork;
+    document.querySelector("#labour-notice").textContent = "";
+  }
   labourForm.querySelector("button[type=submit]").disabled = state.labourPending || !CarbitAuth.canWrite();
   if (!work) return;
   document.querySelector("#detail-registration").textContent = work.registration;
   document.querySelector("#detail-description").textContent = work.customer_description;
   document.querySelector("#detail-created").textContent = formatDate(work.created_at);
-  labourForm.elements.hours.value = work.labour_hours || "";
-  labourForm.elements.work_description.value = work.labour_work_description || "";
-  labourForm.elements.autodata_reference.value = work.autodata_reference || "";
+  fillLabourForm(work);
+  autodata.render(work);
   const price = document.querySelector("#price-summary");
   price.classList.toggle("hidden", !work.total_price);
   if (work.total_price) {
@@ -250,7 +347,8 @@ function renderDetail() {
     const item = document.createElement("li");
     item.innerHTML = "<strong></strong><span></span>";
     item.querySelector("strong").textContent = event.event_type === "TIEDUSTELU_LUOTU"
-      ? "Tiedustelu luotu" : "Autodata-työaika kirjattu";
+      ? "Tiedustelu luotu" : event.event_type === "AUTODATA_HAKU_HYVAKSYTTY"
+        ? "Autodata-haun työaika hyväksytty" : "Autodata-työaika kirjattu";
     const actor = event.details?.actor_attribution;
     const verified = actor?.version === 1 && actor.provenance === "authenticated_session"
       && actor.user_id === event.actor && typeof actor.display_name === "string";
@@ -273,12 +371,14 @@ async function loadWorks() {
 async function openWork(id) {
   const epoch = ++state.selectionEpoch;
   state.selected = null;
+  autodata.open(null, epoch);
   renderList();
   renderDetail();
   try {
     const work = await api(`/api/works/${id}`);
     if (epoch !== state.selectionEpoch) return;
     state.selected = work;
+    autodata.open(work, epoch);
     renderList();
     renderDetail();
   } catch (problem) {
@@ -336,8 +436,11 @@ newForm.addEventListener("submit", async (event) => {
 labourForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const work = state.selected;
-  if (!CarbitAuth.canWrite() || state.labourPending || !work || labourForm.dataset.workId !== work.id
-      || Number(labourForm.dataset.version) !== work.version) return;
+  if (!CarbitAuth.canWrite() || state.labourPending || !work || labourForm.dataset.workId !== work.id) return;
+  if (Number(labourForm.dataset.version) !== work.version) {
+    labourConflict(work);
+    return;
+  }
   const epoch = state.selectionEpoch;
   const data = Object.fromEntries(new FormData(labourForm));
   data.version = work.version;
@@ -349,8 +452,11 @@ labourForm.addEventListener("submit", async (event) => {
     const saved = await api(`/api/works/${work.id}/labour`, {
       method: "PUT", body: JSON.stringify(data)
     });
-    if (epoch === state.selectionEpoch && state.selected?.id === work.id) {
+    if (epoch === state.selectionEpoch && state.selected?.id === work.id
+        && Number.isSafeInteger(saved.version) && Number.isSafeInteger(state.selected.version)
+        && saved.version >= state.selected.version) {
       state.selected = saved;
+      delete labourForm.dataset.dirtyWork;
       renderDetail();
       showToast("Työaika ja kustannus tallennettiin.");
     }

@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/login.css">
     <script src="/login.js" defer></script>
     <script src="/static/inquiry_drafts.js" defer></script>
+    <script src="/static/autodata.js" defer></script>
     <script src="/static/app.js" defer></script>
   </head>
   <body>
@@ -61,9 +62,11 @@
             <div><dt>Luotu</dt><dd id="detail-created"></dd></div>
           </dl>
 
+          <section id="autodata-panel" aria-labelledby="autodata-title"></section>
+
           <form id="labour-form" class="stacked-form">
             <div class="form-heading">
-              <div><h3>Autodata-työaika</h3><p>Kirjaa tarkistettu ohjeaika sellaisenaan.</p></div>
+              <div><h3>Työaika käsin (Autodatasta luettu)</h3><p>Kirjaa tarkistettu ohjeaika sellaisenaan.</p></div>
               <span class="rate">90 €/h sis. ALV 25,5 %</span>
             </div>
             <div class="form-grid">
@@ -71,6 +74,8 @@
               <label class="wide">Autodatan työn kuvaus<textarea name="work_description" rows="3" required maxlength="2000"></textarea></label>
               <label class="wide">Autodata-viite (valinnainen)<input name="autodata_reference" maxlength="500"></label>
             </div>
+            <p id="labour-notice" class="notice" role="status"></p>
+            <button id="labour-reset" class="secondary" type="button">Palauta tallennettuun</button>
             <div id="price-summary" class="price-summary hidden"></div>
             <p class="form-error hidden" id="labour-error" role="alert"></p>
             <div class="form-actions">
