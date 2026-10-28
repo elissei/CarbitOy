@@ -1,5 +1,10 @@
 # Carbit Oy – domain-vaihe 1 ja työaikalaskennan suunnitelma
 
+## Rajauspäivitys 28.10.2026
+
+Automaattinen työaikahaku on poistettu tavoitellusta työnkulusta. Toimihenkilö tarkistaa työajan tarvittaessa Autodatasta erikseen ja syöttää tunnit sovellukseen. Alla olevat suunnitelmat eivät tarkoita Autodata-integraatiota tai ohjelmallista hakua. [Nykyinen työnkulku](tyonkulku.md).
+
+
 Päivitetty 9.10.2026. Toteutuksen lähde:
 [feature/autodata-labour, 6fb2e993](https://github.com/elissei/CarbitOy/tree/6fb2e9930e20235661aece6856c396d8db15a3a4).
 Lähdehaaran testitulos: 158 läpäissyttä testiä; tätä dokumentointipäivitystä
@@ -34,8 +39,8 @@ Lähteet:
 
 ```mermaid
 flowchart TD
-  A["Yksilöidyt työt ja alkuperäiset Autodata-ajat"] --> B{"Saman operaation molemmat puolet?"}
-  B -->|Kyllä| C{"Vastaava Autodata-pariaika löytyy?"}
+  A["Yksilöidyt työt ja toimihenkilön syöttämät ajat"] --> B{"Saman operaation molemmat puolet?"}
+  B -->|Kyllä| C{"Toimihenkilön tarkistama pariaika annettu?"}
   C -->|Ei| H["Ihmisen tarkistus: aikaa ei keksitä"]
   C -->|Kyllä| P["Valitse pariaika; puolien ajat jäävät alkuperätiedoiksi"]
   B -->|Ei| T["Erilliset ajat oletuksena"]
@@ -64,7 +69,7 @@ olemassa olevaa monen työn laskentaa.
 
 ```mermaid
 flowchart LR
-  A["Alkuperäiset Autodata-ajat säilyvät"] --> B["Yrittäjä tai valtuutettu mekaanikko"]
+  A["Alkuperäiset käsin syötetyt ajat säilyvät"] --> B["Yrittäjä tai valtuutettu mekaanikko"]
   B --> C["Erillinen LabourTimeAdjustment"]
   C --> D["Kohdistus + uusi aika + peruste + tekijä + UTC-aikaleima"]
   D --> E["Hyväksytty aika laskentaan; aiemmat kirjaukset historiaan"]

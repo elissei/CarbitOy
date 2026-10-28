@@ -1,5 +1,11 @@
 # Carbit Oy – arkkitehtuuri ja päätöspuut
 
+## Nykyinen työnkulku 28.10.2026
+
+**Työaika tarkistetaan ja syötetään käsin.** Autodata on toimihenkilön erillinen työkalu, ei sovelluksen integraatio. [Nykyinen työnkulku ja demon rajaus](tyonkulku.md).
+
+## Historiallisten päätöspuiden lähde
+
 Päivitetty 6.10.2026. Toteutetun logiikan lähde on [`4de26b4`](https://github.com/elissei/CarbitOy/tree/4de26b4284280fdd8c3867e01e8c38bcad718115), joka sisältää backend-muutokset commitin `0d8b03c` loppuun asti. Myöhemmät muutokset eivät päivity kuviin automaattisesti.
 
 ## Domain-vaihe 1: toteutettu 9.10.2026
@@ -53,11 +59,11 @@ Demo käsittelee yhden varaosatarpeen. Kutsuja antaa ajoneuvon, työajan, tuotte
 
 Sivujen otsikoissa oleva päätöspuun numero alkaa nollasta kokonaiskartan jälkeen; taulukossa käytetään PDF:n sivunumeroita. Sanastoparseri ja `search_suppliers()` ovat erillisiä toteutettuja työkaluja, joita viestistä ehdotukseen etenevä demo ei kutsu. `sort_by_total_price()` on erillinen apufunktio; demo säilyttää ehdokkaiden muodostusjärjestyksen.
 
-## Tavoitearkkitehtuuri
+## Päivitetty arkkitehtuuri 28.10.2026
 
-Alla oleva 2.10.2026 laadittu kuva esittää projektin laajempaa tavoitetta. Sen suunnitellut liitännät eivät tarkoita, että ne olisivat toteutettuja. Ajantasainen toteutus näkyy yllä ja [Saagan arkkitehtuuridokumentissa](../../saaga-docs/ARCHITECTURE.md).
+Työajan tarkistus ja syöttö kuuluvat toimihenkilölle. Automaattinen työaikahaku on rajattu pois. Kuva erottaa toteutetun demoketjun suunnitelluista integraatioista.
 
-![Carbit Oy:n tavoitearkkitehtuuri](Carbit-arkkitehtuuri.png)
+![Carbit Oy:n työnkulku](Carbit-arkkitehtuuri.png)
 
 ## Seuraavien päivitysten tekeminen
 

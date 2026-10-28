@@ -6,6 +6,10 @@ Tilannekuva 6.10.2026, lähdekoodi [`4de26b4`](https://github.com/elissei/Carbit
 > ja suunnitelmien tilat: [Domain-vaihe 1](domain-vaihe-1.md).
 > Uusi parivaihtokonfiguraatio ei lisää Autodata-aikavalintaa näihin ketjuihin.
 
+## Rajauspäivitys 28.10.2026
+
+Työaika tarkistetaan ja syötetään käsin. Automaattinen työaikahaku on poistettu tavoitteesta. Toimihenkilö käyttää Autodataa tarvittaessa erikseen. Alla on historiallinen toteutuksen tilannekuva; [nykyinen työnkulku](tyonkulku.md) kuvaa päivitetyn vastuunjaon.
+
 ## Kokonaisketju
 
 ```mermaid
