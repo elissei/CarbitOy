@@ -1,11 +1,11 @@
 # CarbitOy
-IT-Engineering Bachelor Degree's Practice - customer inquiry to work offer workflow automation
+ICT-insinööriopintojen työharjoitteluprojekti: asiakkaan työtiedustelusta ihmisen tarkistamaan tarjousluonnokseen.
 
-## Visualisoinnit
+## Työnäyte ja nykyinen rajaus
+AI jäsentää viestin, Python validoi tiedot ja laskee tarjouksen. Ihminen valitsee varaosat sekä tarkistaa ja syöttää työajan. **Sovellus ei hae työaikoja Autodatasta tai muusta palvelusta.** Toimihenkilö käyttää Autodataa tarvittaessa erikseen.
 
-[Arkkitehtuurikuva ja toteutettujen päätösketjujen dokumentaatio](docs/visualizations/README.md).
+- [Nykyinen työnkulku ja demon rajat](docs/visualizations/tyonkulku.md)
+- [Arkkitehtuurikuva](docs/visualizations/Carbit-arkkitehtuuri.png)
+- [Päätöspuut ja versioiden tilannekuvat](docs/visualizations/README.md)
 
-- [Yrittäjälle tarkoitettu tavoitearkkitehtuuri](docs/visualizations/Carbit-arkkitehtuuri.png)
-- [Toteutetut päätöspuut PDF-muodossa](docs/visualizations/Carbit-toteutetut-paatospuut.pdf)
-- [Päätöspuut erillisinä PNG-kuvina](docs/visualizations/decision-trees/)
-
+Main sisältää vanhemman demototeutuksen. Laajempi sovellus on kehityshaaroissa; ulkoiset integraatiot ja tuotantokäyttöönotto ovat kesken. Visualisointien päivittäminen ei muuta sovelluskoodia tai julkaistua selain-demoa.

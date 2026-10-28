@@ -1,12 +1,18 @@
-# Carbit Oy - arkkitehtuuri ja päätöspuut
+# Carbit Oy työnkulku ja päätöspuut
 
-Visualisoinnit laadittu 2.10.2026.
+## Nykyinen työnkulku 28.10.2026
 
-## Tavoitearkkitehtuuri
+**Työaika tarkistetaan ja syötetään käsin. Automaattinen työaikahaku on rajattu pois.** Toimihenkilö katsoo ajan tarvittaessa Autodatasta erikseen.
 
-Yrittäjälle tarkoitettu kokonaiskuva kuvaa projektin tavoitetta. Kaikki kuvan liitännät ja vaiheet eivät ole vielä toteutettuja.
+[Nykyinen työnkulku ja demon rajat](tyonkulku.md)
 
-![Carbit Oy:n tavoitearkkitehtuuri](Carbit-arkkitehtuuri.png)
+![Päivitetty työnkulku ja arkkitehtuuri](Carbit-arkkitehtuuri.png)
+
+Kuva erottaa toteutetun demoketjun keskeneräisistä integraatioista. Työajan kustannuslaskenta säilyy.
+
+## Historialliset päätöspuut
+
+Alla oleva dokumentaatio kuvaa siihen merkittyä lähdekoodiversiota. Se ei lupaa automaattista työaikahakua.
 
 ## Toteutetut päätösketjut
 
