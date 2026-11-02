@@ -20,7 +20,7 @@ Sovellus avustaa, mutta ihminen tekee päätökset. Se ei tee tilauksia automaat
 
 - **Tavallinen ohjelma:** yhteyden kumppanin palveluun tekee tavallinen, ennalta ohjelmoitu Python-sovellus. Se tekee vain ne kyselyt, jotka sille on ohjelmoitu ja sovittu.
 - **Ei tekoälyä kumppanin järjestelmään:** tekoälyagentti ei käytä kumppanin portaalia tai rajapintaa, eikä se saa kumppanin tunnuksia.
-- **Tekoäly viestikanavana:** harkitsemme tekoälypohjaista viestikanavaa korjaamon ja sovelluksen väliin, esimerkiksi tiedusteluluonnosten kirjaamiseen. Sen toimet kulkevat Carbitin sääntöjen ja ihmisen hyväksynnän kautta, eikä se ole suorassa yhteydessä kumppanin järjestelmään.
+- **Tekoälyn rooli:** tekoäly toimii vain korjaamon työntekijän ja Carbit-sovelluksen välissä. Se muuttaa asiakkaan viestin muotoon, jonka Python-sovellus voi käsitellä, ja toimii työntekijän viestikanavana sovellukseen. Syöte kulkee Carbitin sääntöjen ja ihmisen hyväksynnän kautta. Tekoäly ei ole yhteydessä kumppanin järjestelmään.
 - **Kuormitus:** kyselyt tulevat ihmisen käynnistämistä työvaiheista ja ovat määrältään pieniä. Noudatamme sovittuja nopeusrajoja.
 - **Tunnukset:** tunnukset säilytetään palvelimella, eikä niitä näytetä käyttäjille tai viedä selaimeen.
 - **Tietoturva:** käyttäjät kirjautuvat kaksivaiheisesti, ja kirjoittavista toimista jää jälki siitä, kuka ne teki.
