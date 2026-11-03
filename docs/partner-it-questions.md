@@ -47,6 +47,7 @@ Sovellus avustaa, mutta ihminen tekee päätökset. Se ei tee tilauksia automaat
 11. Miten tunnistautuminen toimii, voiko tunnuksen rajata vain lukuoikeuteen, ja miten tunnus vaihdetaan?
 12. Pitääkö yhteys tehdä kiinteästä IP-osoitteesta?
 13. Miten rajapinnan muutoksista ja katkoista ilmoitetaan, ja kuka auttaa ongelmatilanteissa?
+14. Jos rajapinnan dokumentaatio on luottamuksellinen: saako sen pohjalta kirjoitetun oman integraatiokoodin julkaista, esimerkiksi julkisessa koodivarastossa ilman tunnuksia ja dokumentaatiota? Mitkä tiedot pitää jättää pois (palvelinosoitteet, metodien nimet, tunnistautumistapa)?
 
 **Myöhemmin:** onko sähköinen tilaus mahdollinen rajapinnan kautta? Emme ole toteuttamassa sitä nyt. Haluamme vain tietää, onko se mahdollinen.
 
